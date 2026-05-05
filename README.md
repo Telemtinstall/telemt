@@ -70,12 +70,14 @@ docker run --rm --entrypoint /app/telemt telemt-local:3.4.10 --version
 
 Перед запуском нужен чистый Debian/Ubuntu сервер, A-запись домена на IPv4 сервера и свободные `80/tcp`, `443/tcp`.
 
-Если image уже собран локально на сервере:
+Обычный запуск:
 
 ```bash
 chmod +x ./install_docker-telemt.sh
 sudo ./install_docker-telemt.sh
 ```
+
+Если `telemt-local:<tag>` ещё не собран, установщик сам запустит `build.sh` из этого же каталога. Отдельно запускать `build.sh` перед установкой больше не обязательно.
 
 Если image находится в registry:
 
@@ -133,6 +135,7 @@ docker login ghcr.io
 TELEMT_REPOSITORY  GitHub repo с release assets. Default: telemt/telemt
 TELEMT_VERSION     Release tag или latest. Default: latest
 IMAGE              Имя image. Default: telemt-local
+AUTO_BUILD_IMAGE   yes автоматически собирает image, если его нет. Default: yes
 TARGET             prod или debug. Default: prod
 PLATFORM           linux/amd64 или linux/arm64, опционально
 NO_CACHE           1 отключает build cache
@@ -217,12 +220,14 @@ docker run --rm --entrypoint /app/telemt telemt-local:3.4.10 --version
 
 Before running, use a clean Debian/Ubuntu server, create a DNS A record pointing to the server IPv4, and keep `80/tcp` and `443/tcp` free.
 
-If the image is already built locally on the server:
+Normal run:
 
 ```bash
 chmod +x ./install_docker-telemt.sh
 sudo ./install_docker-telemt.sh
 ```
+
+If `telemt-local:<tag>` is not built yet, the installer runs `build.sh` from the same directory automatically. Running `build.sh` before the installer is no longer required.
 
 If the image is in a registry:
 
@@ -280,6 +285,7 @@ docker login ghcr.io
 TELEMT_REPOSITORY  GitHub repo with release assets. Default: telemt/telemt
 TELEMT_VERSION     Release tag or latest. Default: latest
 IMAGE              Image name. Default: telemt-local
+AUTO_BUILD_IMAGE   yes builds the image automatically when missing. Default: yes
 TARGET             prod or debug. Default: prod
 PLATFORM           linux/amd64 or linux/arm64, optional
 NO_CACHE           1 disables build cache

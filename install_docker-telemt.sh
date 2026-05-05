@@ -10,6 +10,7 @@ SECRET_FILE="${SECRET_FILE:-$INSTALL_DIR/telemt-secret.env}"
 DOMAIN="${DOMAIN:-}"
 EMAIL="${EMAIL:-}"
 TELEMT_IMAGE="${TELEMT_IMAGE:-telemt-local:latest}"
+TELEMT_VERSION="${TELEMT_VERSION:-latest}"
 TELEMT_USER="${TELEMT_USER:-default}"
 TELEMT_MAX_TCP_CONNS="${TELEMT_MAX_TCP_CONNS:-1000}"
 AD_TAG="${AD_TAG:-}"
@@ -17,6 +18,7 @@ USE_MIDDLE_PROXY="${USE_MIDDLE_PROXY:-}"
 ENABLE_LOGS="${ENABLE_LOGS:-no}"
 ENABLE_DOCKER_HARDENING="${ENABLE_DOCKER_HARDENING:-yes}"
 ENABLE_HIGH_LOAD_TUNING="${ENABLE_HIGH_LOAD_TUNING:-no}"
+AUTO_BUILD_IMAGE="${AUTO_BUILD_IMAGE:-yes}"
 ASSUME_YES="${ASSUME_YES:-0}"
 
 PUBLIC_IP=""
@@ -54,6 +56,10 @@ ask_default() {
   if [ -n "${!var:-}" ]; then
     default="${!var}"
   fi
+  if [ "$ASSUME_YES" = "1" ]; then
+    printf -v "$var" '%s' "$default"
+    return 0
+  fi
   if [ -n "$default" ]; then
     read -r -p "$prompt [$default]: " value
     value="${value:-$default}"
@@ -68,6 +74,12 @@ ask_yes_no() {
   local prompt="$2"
   local default="$3"
   local value normalized
+  if [ "$ASSUME_YES" = "1" ]; then
+    if normalized="$(normalize_yes_no "$default")"; then
+      printf -v "$var" '%s' "$normalized"
+      return 0
+    fi
+  fi
   while true; do
     read -r -p "$prompt yes/no [$default]: " value
     value="${value:-$default}"
@@ -85,6 +97,7 @@ validate_inputs() {
   [[ "$TELEMT_USER" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || die "Bad Telemt user name: $TELEMT_USER"
   [[ "$TELEMT_MAX_TCP_CONNS" =~ ^[0-9]+$ ]] || die "Bad connection limit: $TELEMT_MAX_TCP_CONNS"
   [[ "$TELEMT_IMAGE" =~ ^[A-Za-z0-9._/:@+-]+$ ]] || die "Bad Docker image: $TELEMT_IMAGE"
+  [[ "$TELEMT_VERSION" =~ ^[A-Za-z0-9._/@:+-]+$ ]] || die "Bad Telemt version: $TELEMT_VERSION"
   if [ -n "$AD_TAG" ]; then
     [[ "$AD_TAG" =~ ^[A-Fa-f0-9]{32}$ ]] || die "ad_tag must be 32 hex chars."
   fi
@@ -92,10 +105,12 @@ validate_inputs() {
   normalize_yes_no "$ENABLE_LOGS" >/dev/null || die "Bad ENABLE_LOGS"
   normalize_yes_no "$ENABLE_DOCKER_HARDENING" >/dev/null || die "Bad ENABLE_DOCKER_HARDENING"
   normalize_yes_no "$ENABLE_HIGH_LOAD_TUNING" >/dev/null || die "Bad ENABLE_HIGH_LOAD_TUNING"
+  normalize_yes_no "$AUTO_BUILD_IMAGE" >/dev/null || die "Bad AUTO_BUILD_IMAGE"
   USE_MIDDLE_PROXY="$(normalize_yes_no "$USE_MIDDLE_PROXY")"
   ENABLE_LOGS="$(normalize_yes_no "$ENABLE_LOGS")"
   ENABLE_DOCKER_HARDENING="$(normalize_yes_no "$ENABLE_DOCKER_HARDENING")"
   ENABLE_HIGH_LOAD_TUNING="$(normalize_yes_no "$ENABLE_HIGH_LOAD_TUNING")"
+  AUTO_BUILD_IMAGE="$(normalize_yes_no "$AUTO_BUILD_IMAGE")"
 }
 
 save_config() {
@@ -104,6 +119,7 @@ save_config() {
 DOMAIN=$(printf '%q' "$DOMAIN")
 EMAIL=$(printf '%q' "$EMAIL")
 TELEMT_IMAGE=$(printf '%q' "$TELEMT_IMAGE")
+TELEMT_VERSION=$(printf '%q' "$TELEMT_VERSION")
 TELEMT_USER=$(printf '%q' "$TELEMT_USER")
 TELEMT_MAX_TCP_CONNS=$(printf '%q' "$TELEMT_MAX_TCP_CONNS")
 AD_TAG=$(printf '%q' "$AD_TAG")
@@ -111,6 +127,7 @@ USE_MIDDLE_PROXY=$(printf '%q' "$USE_MIDDLE_PROXY")
 ENABLE_LOGS=$(printf '%q' "$ENABLE_LOGS")
 ENABLE_DOCKER_HARDENING=$(printf '%q' "$ENABLE_DOCKER_HARDENING")
 ENABLE_HIGH_LOAD_TUNING=$(printf '%q' "$ENABLE_HIGH_LOAD_TUNING")
+AUTO_BUILD_IMAGE=$(printf '%q' "$AUTO_BUILD_IMAGE")
 EOF
 }
 
@@ -185,12 +202,113 @@ install_packages() {
     ca-certificates curl openssl jq iproute2 nginx certbot docker.io
 
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnginx-mod-stream || true
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-cli docker-buildx || true
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-plugin || \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose
 
-  systemctl enable --now docker
+  ensure_docker_available
   systemctl enable --now nginx || true
   systemctl enable --now certbot.timer 2>/dev/null || true
+}
+
+install_official_docker_packages() {
+  local os_id os_codename docker_codename arch
+
+  [ -r /etc/os-release ] || die "Cannot detect OS for Docker CLI fallback."
+  # shellcheck disable=SC1091
+  source /etc/os-release
+  os_id="${ID:-}"
+  os_codename="${VERSION_CODENAME:-}"
+
+  case "$os_id" in
+    debian|ubuntu) ;;
+    *) die "Docker CLI is missing and automatic Docker CE fallback supports only Debian/Ubuntu." ;;
+  esac
+
+  if [ -z "$os_codename" ] && have lsb_release; then
+    os_codename="$(lsb_release -cs)"
+  fi
+  [ -n "$os_codename" ] || die "Cannot detect Debian/Ubuntu codename for Docker CE fallback."
+
+  docker_codename="$os_codename"
+  if [ "$os_id" = "debian" ] && [ "$docker_codename" = "trixie" ]; then
+    say "Docker CE repo for Debian trixie may be unavailable; using bookworm Docker repo for CLI fallback."
+    docker_codename="bookworm"
+  fi
+
+  arch="$(dpkg --print-architecture)"
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL "https://download.docker.com/linux/${os_id}/gpg" -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  cat > /etc/apt/sources.list.d/docker.list <<EOF
+deb [arch=${arch} signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/${os_id} ${docker_codename} stable
+EOF
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+}
+
+ensure_docker_available() {
+  if have docker; then
+    systemctl enable --now docker
+    return 0
+  fi
+
+  say "Docker daemon package is installed, but Docker CLI is missing. Trying distro docker-cli package..."
+  if have apt-get; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-cli docker-buildx || true
+  fi
+
+  if ! have docker; then
+    say "Docker CLI is still missing. Installing official Docker CE CLI packages..."
+    install_official_docker_packages
+  fi
+
+  have docker || die "Docker CLI is still not available after installation."
+  systemctl enable --now docker
+  docker version >/dev/null
+}
+
+image_name_and_tag() {
+  local image="$1"
+  local last name tag
+
+  if [[ "$image" == *@sha256:* ]]; then
+    return 1
+  fi
+
+  last="${image##*/}"
+  if [[ "$last" == *:* ]]; then
+    name="${image%:*}"
+    tag="${last##*:}"
+  else
+    name="$image"
+    tag="$TELEMT_VERSION"
+  fi
+
+  [ -n "$tag" ] || tag="latest"
+  printf '%s\n%s\n' "$name" "$tag"
+}
+
+build_local_image() {
+  local script_dir build_script parsed image_name image_tag
+  script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+  build_script="${BUILD_SCRIPT:-$script_dir/build.sh}"
+
+  [ -f "$build_script" ] || die "Cannot auto-build Docker image: build.sh is not found near install_docker-telemt.sh."
+  chmod +x "$build_script"
+
+  parsed="$(image_name_and_tag "$TELEMT_IMAGE")" || die "Cannot auto-build digest-pinned image: $TELEMT_IMAGE"
+  image_name="$(printf '%s\n' "$parsed" | sed -n '1p')"
+  image_tag="$(printf '%s\n' "$parsed" | sed -n '2p')"
+
+  say "Building Telemt Docker image automatically:"
+  say "  image:   ${image_name}:${image_tag}"
+  say "  version: ${image_tag}"
+  (
+    cd "$(dirname "$build_script")"
+    IMAGE="$image_name" TELEMT_VERSION="$image_tag" PUSH=0 "$build_script"
+  )
 }
 
 check_docker_image() {
@@ -199,15 +317,30 @@ check_docker_image() {
     say "Docker image exists locally."
     return 0
   fi
-  say "Docker image is not local. Trying docker pull..."
-  if docker pull "$TELEMT_IMAGE"; then
+
+  if [[ "$TELEMT_IMAGE" != telemt-local:* ]]; then
+    say "Docker image is not local. Trying docker pull..."
+    if docker pull "$TELEMT_IMAGE"; then
+      return 0
+    fi
+  else
+    say "Local image is not built yet."
+  fi
+
+  if [ "$AUTO_BUILD_IMAGE" = "yes" ]; then
+    build_local_image
+    docker image inspect "$TELEMT_IMAGE" >/dev/null 2>&1 && return 0
+    die "Image build finished, but Docker cannot inspect $TELEMT_IMAGE."
+  fi
+
+  if docker image inspect "$TELEMT_IMAGE" >/dev/null 2>&1; then
     return 0
   fi
 
   cat >&2 <<EOF
 ERROR: Cannot find or pull image: $TELEMT_IMAGE
 
-If you want to use the local image, build it first:
+Auto-build is disabled. Build the local image manually:
   cd docker-telemt
   TELEMT_VERSION=<version> ./build.sh
 
@@ -291,6 +424,7 @@ write_mask_site_http_only() {
 </body>
 </html>
 EOF
+  chmod 0644 "/var/www/$DOMAIN/index.html"
 
   rm -f /etc/nginx/sites-enabled/default
   write_file_root "/etc/nginx/sites-available/$DOMAIN" 0644 root:root <<EOF
@@ -368,7 +502,7 @@ server {
     ssl_prefer_server_ciphers off;
 
     location / {
-        try_files \$uri \$uri/ =404;
+        try_files \$uri /index.html =404;
     }
 }
 EOF
@@ -475,7 +609,16 @@ enabled = true
 weight = 10
 EOF
   } > "$INSTALL_DIR/telemt.toml"
+  chown 65532:65532 "$INSTALL_DIR/telemt.toml"
   chmod 600 "$INSTALL_DIR/telemt.toml"
+}
+
+fix_runtime_permissions() {
+  if [ -f "$INSTALL_DIR/telemt.toml" ]; then
+    chown 65532:65532 "$INSTALL_DIR/telemt.toml"
+    chmod 600 "$INSTALL_DIR/telemt.toml"
+  fi
+  install -d -m 0777 "$INSTALL_DIR/runtime"
 }
 
 write_compose() {
@@ -575,6 +718,7 @@ Install plan:
   public IPv4:        $PUBLIC_IP
   email:              $EMAIL
   docker image:       $TELEMT_IMAGE
+  auto-build image:   $AUTO_BUILD_IMAGE
   Telemt user:        $TELEMT_USER
   connection limit:   $TELEMT_MAX_TCP_CONNS
   ad_tag:             $([ -n "$AD_TAG" ] && printf yes || printf no)
@@ -648,7 +792,7 @@ Before running:
   1. Use a clean Debian/Ubuntu server.
   2. Create DNS A record: <domain> -> this server IPv4.
   3. Make sure ports 80/tcp and 443/tcp are reachable.
-  4. Build/pull the Docker image before install, or provide a registry image.
+  4. Keep build.sh next to this installer; the image will be built automatically if missing.
 
 EOF
 
@@ -709,6 +853,7 @@ main() {
     install_packages
     mark_done packages
   fi
+  ensure_docker_available
 
   if step_done docker_image; then
     say "[03] Check Docker image (already done)"
@@ -746,6 +891,7 @@ main() {
     write_firewall_hints
     mark_done config
   fi
+  fix_runtime_permissions
 
   say "[07] Start Telemt"
   start_telemt
