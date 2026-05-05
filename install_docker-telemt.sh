@@ -1,0 +1,777 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SCRIPT_VERSION="2026-05-05"
+INSTALL_DIR="${INSTALL_DIR:-/opt/telemt-docker}"
+STATE_FILE="${STATE_FILE:-/root/.install_docker_telemt.state}"
+SAVED_CONFIG="${SAVED_CONFIG:-/root/.install_docker_telemt.config}"
+SECRET_FILE="${SECRET_FILE:-$INSTALL_DIR/telemt-secret.env}"
+
+DOMAIN="${DOMAIN:-}"
+EMAIL="${EMAIL:-}"
+TELEMT_IMAGE="${TELEMT_IMAGE:-telemt-local:latest}"
+TELEMT_USER="${TELEMT_USER:-default}"
+TELEMT_MAX_TCP_CONNS="${TELEMT_MAX_TCP_CONNS:-1000}"
+AD_TAG="${AD_TAG:-}"
+USE_MIDDLE_PROXY="${USE_MIDDLE_PROXY:-}"
+ENABLE_LOGS="${ENABLE_LOGS:-no}"
+ENABLE_DOCKER_HARDENING="${ENABLE_DOCKER_HARDENING:-yes}"
+ENABLE_HIGH_LOAD_TUNING="${ENABLE_HIGH_LOAD_TUNING:-no}"
+ASSUME_YES="${ASSUME_YES:-0}"
+
+PUBLIC_IP=""
+
+say() {
+  printf '%s\n' "$*"
+}
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+need_root() {
+  [ "$(id -u)" -eq 0 ] || die "Run as root."
+}
+
+normalize_yes_no() {
+  case "${1,,}" in
+    y|yes|д|да|true|1) printf 'yes' ;;
+    n|no|н|нет|false|0|'') printf 'no' ;;
+    *) return 1 ;;
+  esac
+}
+
+ask_default() {
+  local var="$1"
+  local prompt="$2"
+  local default="$3"
+  local value
+  if [ -n "${!var:-}" ]; then
+    default="${!var}"
+  fi
+  if [ -n "$default" ]; then
+    read -r -p "$prompt [$default]: " value
+    value="${value:-$default}"
+  else
+    read -r -p "$prompt: " value
+  fi
+  printf -v "$var" '%s' "$value"
+}
+
+ask_yes_no() {
+  local var="$1"
+  local prompt="$2"
+  local default="$3"
+  local value normalized
+  while true; do
+    read -r -p "$prompt yes/no [$default]: " value
+    value="${value:-$default}"
+    if normalized="$(normalize_yes_no "$value")"; then
+      printf -v "$var" '%s' "$normalized"
+      return 0
+    fi
+    say "Please answer yes or no."
+  done
+}
+
+validate_inputs() {
+  [[ "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] || die "Bad domain: $DOMAIN"
+  [[ "$EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || die "Bad email: $EMAIL"
+  [[ "$TELEMT_USER" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || die "Bad Telemt user name: $TELEMT_USER"
+  [[ "$TELEMT_MAX_TCP_CONNS" =~ ^[0-9]+$ ]] || die "Bad connection limit: $TELEMT_MAX_TCP_CONNS"
+  [[ "$TELEMT_IMAGE" =~ ^[A-Za-z0-9._/:@+-]+$ ]] || die "Bad Docker image: $TELEMT_IMAGE"
+  if [ -n "$AD_TAG" ]; then
+    [[ "$AD_TAG" =~ ^[A-Fa-f0-9]{32}$ ]] || die "ad_tag must be 32 hex chars."
+  fi
+  normalize_yes_no "$USE_MIDDLE_PROXY" >/dev/null || die "Bad USE_MIDDLE_PROXY"
+  normalize_yes_no "$ENABLE_LOGS" >/dev/null || die "Bad ENABLE_LOGS"
+  normalize_yes_no "$ENABLE_DOCKER_HARDENING" >/dev/null || die "Bad ENABLE_DOCKER_HARDENING"
+  normalize_yes_no "$ENABLE_HIGH_LOAD_TUNING" >/dev/null || die "Bad ENABLE_HIGH_LOAD_TUNING"
+  USE_MIDDLE_PROXY="$(normalize_yes_no "$USE_MIDDLE_PROXY")"
+  ENABLE_LOGS="$(normalize_yes_no "$ENABLE_LOGS")"
+  ENABLE_DOCKER_HARDENING="$(normalize_yes_no "$ENABLE_DOCKER_HARDENING")"
+  ENABLE_HIGH_LOAD_TUNING="$(normalize_yes_no "$ENABLE_HIGH_LOAD_TUNING")"
+}
+
+save_config() {
+  umask 077
+  cat > "$SAVED_CONFIG" <<EOF
+DOMAIN=$(printf '%q' "$DOMAIN")
+EMAIL=$(printf '%q' "$EMAIL")
+TELEMT_IMAGE=$(printf '%q' "$TELEMT_IMAGE")
+TELEMT_USER=$(printf '%q' "$TELEMT_USER")
+TELEMT_MAX_TCP_CONNS=$(printf '%q' "$TELEMT_MAX_TCP_CONNS")
+AD_TAG=$(printf '%q' "$AD_TAG")
+USE_MIDDLE_PROXY=$(printf '%q' "$USE_MIDDLE_PROXY")
+ENABLE_LOGS=$(printf '%q' "$ENABLE_LOGS")
+ENABLE_DOCKER_HARDENING=$(printf '%q' "$ENABLE_DOCKER_HARDENING")
+ENABLE_HIGH_LOAD_TUNING=$(printf '%q' "$ENABLE_HIGH_LOAD_TUNING")
+EOF
+}
+
+load_config_if_exists() {
+  if [ -f "$SAVED_CONFIG" ]; then
+    say "Resume config found: $SAVED_CONFIG"
+    # shellcheck disable=SC1090
+    source "$SAVED_CONFIG"
+  fi
+}
+
+step_done() {
+  [ -f "$STATE_FILE" ] && grep -Fxq "$1" "$STATE_FILE"
+}
+
+mark_done() {
+  install -d -m 0700 "$(dirname "$STATE_FILE")"
+  touch "$STATE_FILE"
+  grep -Fxq "$1" "$STATE_FILE" 2>/dev/null || printf '%s\n' "$1" >> "$STATE_FILE"
+}
+
+write_file_root() {
+  local path="$1"
+  local mode="$2"
+  local owner="$3"
+  install -d -m 0755 "$(dirname "$path")"
+  cat > "$path"
+  chown "$owner" "$path"
+  chmod "$mode" "$path"
+}
+
+public_ipv4() {
+  curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null ||
+  curl -4fsS --max-time 10 https://ifconfig.me 2>/dev/null ||
+  curl -4fsS --max-time 10 https://icanhazip.com 2>/dev/null | tr -d '[:space:]'
+}
+
+domain_ipv4s() {
+  getent ahostsv4 "$1" 2>/dev/null | awk '{print $1}' | sort -u
+}
+
+port_listeners() {
+  local port="$1"
+  ss -H -ltnp 2>/dev/null | awk -v p=":$port" '$4 ~ p "$" {print}'
+}
+
+check_port_clean_or_nginx() {
+  local port="$1"
+  local listeners
+  listeners="$(port_listeners "$port" || true)"
+  [ -z "$listeners" ] && return 0
+  if printf '%s\n' "$listeners" | grep -q 'nginx'; then
+    return 0
+  fi
+  printf '%s\n' "$listeners"
+  die "Port $port/tcp is already in use by a non-nginx process. Use a clean server or free the port first."
+}
+
+compose_cmd() {
+  if docker compose version >/dev/null 2>&1; then
+    docker compose "$@"
+  elif have docker-compose; then
+    docker-compose "$@"
+  else
+    die "Docker Compose is not installed."
+  fi
+}
+
+install_packages() {
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    ca-certificates curl openssl jq iproute2 nginx certbot docker.io
+
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnginx-mod-stream || true
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-plugin || \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose
+
+  systemctl enable --now docker
+  systemctl enable --now nginx || true
+  systemctl enable --now certbot.timer 2>/dev/null || true
+}
+
+check_docker_image() {
+  say "Checking Docker image: $TELEMT_IMAGE"
+  if docker image inspect "$TELEMT_IMAGE" >/dev/null 2>&1; then
+    say "Docker image exists locally."
+    return 0
+  fi
+  say "Docker image is not local. Trying docker pull..."
+  if docker pull "$TELEMT_IMAGE"; then
+    return 0
+  fi
+
+  cat >&2 <<EOF
+ERROR: Cannot find or pull image: $TELEMT_IMAGE
+
+If you want to use the local image, build it first:
+  cd docker-telemt
+  TELEMT_VERSION=<version> ./build.sh
+
+Or use a registry image:
+  TELEMT_IMAGE=ghcr.io/Telemtinstall/telemt:<version> ./install_docker-telemt.sh
+EOF
+  exit 1
+}
+
+ensure_secret() {
+  install -d -m 0700 "$INSTALL_DIR"
+  if [ -f "$SECRET_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$SECRET_FILE"
+  fi
+  if [ -z "${TELEMT_SECRET:-}" ]; then
+    TELEMT_SECRET="$(openssl rand -hex 16)"
+  fi
+  umask 077
+  cat > "$SECRET_FILE" <<EOF
+TELEMT_SECRET=$(printf '%q' "$TELEMT_SECRET")
+EOF
+  chmod 600 "$SECRET_FILE"
+}
+
+configure_high_load() {
+  [ "$ENABLE_HIGH_LOAD_TUNING" = "yes" ] || return 0
+
+  say "Writing /etc/sysctl.d/99-telemt-high-load.conf"
+  {
+    cat <<'EOF'
+# Telemt high-load tuning.
+net.core.somaxconn = 65535
+net.ipv4.tcp_max_syn_backlog = 65535
+net.ipv4.tcp_keepalive_time = 300
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_keepalive_probes = 5
+fs.file-max = 2097152
+EOF
+    if [ -r /proc/sys/net/ipv4/tcp_available_congestion_control ] &&
+       grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control; then
+      cat <<'EOF'
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+    fi
+  } > /etc/sysctl.d/99-telemt-high-load.conf
+
+  chmod 0644 /etc/sysctl.d/99-telemt-high-load.conf
+  sysctl --system
+}
+
+write_mask_site_http_only() {
+  install -d -m 0755 "/var/www/$DOMAIN/.well-known/acme-challenge"
+  cat > "/var/www/$DOMAIN/index.html" <<EOF
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${DOMAIN}</title>
+  <style>
+    html, body { min-height: 100%; margin: 0; }
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f6f8fb;
+      color: #1c2530;
+      display: grid;
+      place-items: center;
+    }
+    main { width: min(760px, calc(100% - 48px)); }
+    h1 { font-size: clamp(32px, 5vw, 64px); margin: 0 0 12px; letter-spacing: 0; }
+    p { color: #516071; line-height: 1.6; max-width: 620px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>${DOMAIN}</h1>
+    <p>Digital infrastructure, network diagnostics, and private systems maintenance.</p>
+  </main>
+</body>
+</html>
+EOF
+
+  rm -f /etc/nginx/sites-enabled/default
+  write_file_root "/etc/nginx/sites-available/$DOMAIN" 0644 root:root <<EOF
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    access_log off;
+    error_log /var/log/nginx/${DOMAIN}.error.log crit;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/${DOMAIN};
+        default_type "text/plain";
+        try_files \$uri =404;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+EOF
+  ln -sfn "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
+  nginx -t
+  systemctl reload nginx || systemctl restart nginx
+}
+
+issue_certificate() {
+  certbot certonly \
+    --webroot \
+    -w "/var/www/$DOMAIN" \
+    -d "$DOMAIN" \
+    --non-interactive \
+    --agree-tos \
+    --email "$EMAIL" \
+    --keep-until-expiring
+  systemctl enable --now certbot.timer 2>/dev/null || true
+}
+
+write_nginx_full_config() {
+  local access_log_line="access_log off;"
+  if [ "$ENABLE_LOGS" = "yes" ]; then
+    access_log_line="access_log /var/log/nginx/${DOMAIN}.access.log;"
+  fi
+
+  write_file_root "/etc/nginx/sites-available/$DOMAIN" 0644 root:root <<EOF
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    ${access_log_line}
+    error_log /var/log/nginx/${DOMAIN}.error.log crit;
+
+    location ^~ /.well-known/acme-challenge/ {
+        root /var/www/${DOMAIN};
+        default_type "text/plain";
+        try_files \$uri =404;
+    }
+
+    location / {
+        return 301 https://\$host\$request_uri;
+    }
+}
+
+server {
+    listen 127.0.0.1:8443 ssl http2;
+    server_name ${DOMAIN};
+    ${access_log_line}
+    error_log /var/log/nginx/${DOMAIN}.error.log crit;
+
+    root /var/www/${DOMAIN};
+    index index.html;
+
+    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers off;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+}
+EOF
+
+  write_file_root /etc/nginx/modules-enabled/60-telemt-stream-sni.conf 0644 root:root <<EOF
+stream {
+    map \$ssl_preread_server_name \$telemt_backend {
+        ${DOMAIN} 127.0.0.1:1443;
+        default   127.0.0.1:8443;
+    }
+
+    server {
+        listen 443;
+        proxy_pass \$telemt_backend;
+        ssl_preread on;
+        proxy_connect_timeout 5s;
+        proxy_timeout 24h;
+    }
+}
+EOF
+  nginx -t
+  systemctl reload nginx || systemctl restart nginx
+}
+
+write_telemt_config() {
+  install -d -m 0750 "$INSTALL_DIR"
+  install -d -m 0777 "$INSTALL_DIR/runtime"
+
+  local middle_bool="false"
+  [ "$USE_MIDDLE_PROXY" = "yes" ] && middle_bool="true"
+
+  {
+    cat <<EOF
+show_link = ["${TELEMT_USER}"]
+
+[general]
+fast_mode = true
+use_middle_proxy = ${middle_bool}
+log_level = "silent"
+EOF
+    if [ -n "$AD_TAG" ]; then
+      printf 'ad_tag = "%s"\n' "$AD_TAG"
+    fi
+    cat <<EOF
+
+[general.links]
+show = ["${TELEMT_USER}"]
+public_host = "${DOMAIN}"
+public_port = 443
+
+[general.modes]
+classic = false
+secure = false
+tls = true
+
+[network]
+ipv4 = true
+ipv6 = false
+prefer = 4
+
+[server]
+port = 1443
+listen_addr_ipv4 = "127.0.0.1"
+listen_addr_ipv6 = "::1"
+proxy_protocol = false
+metrics_listen = "127.0.0.1:9090"
+metrics_whitelist = ["127.0.0.1/32", "::1/128"]
+
+[server.api]
+enabled = true
+listen = "127.0.0.1:9091"
+read_only = true
+whitelist = ["127.0.0.1/32", "::1/128"]
+minimal_runtime_enabled = true
+minimal_runtime_cache_ttl_ms = 1000
+
+[[server.listeners]]
+ip = "127.0.0.1"
+announce = "${PUBLIC_IP}"
+
+[censorship]
+tls_domain = "${DOMAIN}"
+mask = true
+mask_host = "127.0.0.1"
+mask_port = 8443
+tls_emulation = true
+tls_front_dir = "/tmp/telemt-tlsfront"
+tls_full_cert_ttl_secs = 0
+alpn_enforce = true
+
+[access]
+replay_check_len = 65536
+ignore_time_skew = false
+
+[access.users]
+"${TELEMT_USER}" = "${TELEMT_SECRET}"
+
+[access.user_max_tcp_conns]
+"${TELEMT_USER}" = ${TELEMT_MAX_TCP_CONNS}
+
+[[upstreams]]
+type = "direct"
+enabled = true
+weight = 10
+EOF
+  } > "$INSTALL_DIR/telemt.toml"
+  chmod 600 "$INSTALL_DIR/telemt.toml"
+}
+
+write_compose() {
+  local logging_block
+  local hardening_block
+  if [ "$ENABLE_LOGS" = "yes" ]; then
+    logging_block='
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"'
+  else
+    logging_block='
+    logging:
+      driver: "none"'
+  fi
+
+  if [ "$ENABLE_DOCKER_HARDENING" = "yes" ]; then
+    hardening_block='
+    healthcheck:
+      test: [ "CMD", "/app/telemt", "healthcheck", "/etc/telemt/telemt.toml", "--mode", "liveness" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    security_opt:
+      - no-new-privileges=true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=16m
+    pids_limit: 256
+    mem_limit: 256m
+    cpus: "0.50"'
+  else
+    hardening_block='
+    healthcheck:
+      disable: true'
+  fi
+
+  cat > "$INSTALL_DIR/docker-compose.yml" <<EOF
+services:
+  telemt:
+    image: ${TELEMT_IMAGE}
+    container_name: telemt
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      RUST_LOG: "error"
+    volumes:
+      - ${INSTALL_DIR}/telemt.toml:/etc/telemt/telemt.toml:ro
+    command: ["/etc/telemt/telemt.toml"]
+${hardening_block}${logging_block}
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 262144
+EOF
+  chmod 600 "$INSTALL_DIR/docker-compose.yml"
+}
+
+start_telemt() {
+  cd "$INSTALL_DIR"
+  compose_cmd config >/dev/null
+  compose_cmd up -d --force-recreate
+}
+
+write_firewall_hints() {
+  if have ufw && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+  fi
+  if have firewall-cmd && systemctl is-active --quiet firewalld; then
+    firewall-cmd --permanent --add-service=http || true
+    firewall-cmd --permanent --add-service=https || true
+    firewall-cmd --reload || true
+  fi
+}
+
+validate_install() {
+  sleep 8
+  ss -lntp | grep -E ':(80|443|8443|1443|9090|9091)\b' || true
+  curl -fsS "http://127.0.0.1:9091/v1/users" | tee /tmp/telemt-users.json >/dev/null
+  grep -q '"ok":true' /tmp/telemt-users.json
+  grep -o 'tg://proxy[^"]*' /tmp/telemt-users.json > /root/telemt-proxy-link.txt || true
+  chmod 600 /root/telemt-proxy-link.txt 2>/dev/null || true
+  curl -fsSIs --resolve "${DOMAIN}:443:${PUBLIC_IP}" "https://${DOMAIN}/" | head -n 12 || true
+}
+
+print_plan() {
+  cat <<EOF
+
+Install plan:
+  domain:             $DOMAIN
+  public IPv4:        $PUBLIC_IP
+  email:              $EMAIL
+  docker image:       $TELEMT_IMAGE
+  Telemt user:        $TELEMT_USER
+  connection limit:   $TELEMT_MAX_TCP_CONNS
+  ad_tag:             $([ -n "$AD_TAG" ] && printf yes || printf no)
+  middle_proxy:       $USE_MIDDLE_PROXY
+  logs enabled:       $ENABLE_LOGS
+  Docker hardening:   $ENABLE_DOCKER_HARDENING
+  high-load tuning:   $ENABLE_HIGH_LOAD_TUNING
+
+This installer will configure:
+  - nginx HTTP -> HTTPS redirect
+  - nginx SNI stream on public 443/tcp
+  - HTTPS mask site on 127.0.0.1:8443
+  - Telemt inside Docker on 127.0.0.1:1443
+  - Telemt API on 127.0.0.1:9091
+  - Telemt metrics on 127.0.0.1:9090
+  - Let's Encrypt certificate and certbot renewal timer
+  - optional Docker runtime hardening and healthcheck
+EOF
+
+  if [ "$ENABLE_DOCKER_HARDENING" = "yes" ]; then
+    cat <<'EOF'
+
+Docker hardening will enable:
+  - read_only root filesystem
+  - cap_drop: ALL
+  - no-new-privileges
+  - tmpfs for /tmp
+  - pids/memory/cpu limits
+  - Docker healthcheck
+EOF
+  else
+    cat <<'EOF'
+
+Docker hardening is disabled:
+  - container filesystem will be writable
+  - Linux capabilities are not dropped by this compose file
+  - Docker healthcheck is disabled in compose
+EOF
+  fi
+
+  if [ "$ENABLE_HIGH_LOAD_TUNING" = "yes" ]; then
+    cat <<'EOF'
+
+High-load tuning will write /etc/sysctl.d/99-telemt-high-load.conf:
+  - net.core.somaxconn = 65535
+  - net.ipv4.tcp_max_syn_backlog = 65535
+  - net.ipv4.tcp_keepalive_time = 300
+  - net.ipv4.tcp_keepalive_intvl = 30
+  - net.ipv4.tcp_keepalive_probes = 5
+  - fs.file-max = 2097152
+  - BBR/fq if supported by the kernel
+EOF
+  fi
+}
+
+confirm_plan() {
+  [ "$ASSUME_YES" = "1" ] && return 0
+  local answer
+  read -r -p "Type y or yes to continue: " answer
+  case "${answer,,}" in
+    y|yes|д|да) ;;
+    *) die "Cancelled." ;;
+  esac
+}
+
+interactive_inputs() {
+  cat <<'EOF'
+Telemt Docker installer.
+
+Before running:
+  1. Use a clean Debian/Ubuntu server.
+  2. Create DNS A record: <domain> -> this server IPv4.
+  3. Make sure ports 80/tcp and 443/tcp are reachable.
+  4. Build/pull the Docker image before install, or provide a registry image.
+
+EOF
+
+  ask_default DOMAIN "Proxy domain" "$DOMAIN"
+  EMAIL="${EMAIL:-admin@$DOMAIN}"
+  ask_default EMAIL "Let's Encrypt email" "$EMAIL"
+  ask_default TELEMT_IMAGE "Telemt Docker image" "$TELEMT_IMAGE"
+  ask_default TELEMT_USER "Telemt user name" "$TELEMT_USER"
+  ask_default TELEMT_MAX_TCP_CONNS "Max Telemt connections" "$TELEMT_MAX_TCP_CONNS"
+  ask_default AD_TAG "MTProxy ad_tag, Enter = skip" "$AD_TAG"
+
+  if [ -z "$USE_MIDDLE_PROXY" ]; then
+    if [ -n "$AD_TAG" ]; then
+      USE_MIDDLE_PROXY="yes"
+    else
+      USE_MIDDLE_PROXY="no"
+    fi
+  fi
+  ask_yes_no USE_MIDDLE_PROXY "Use Telegram middle proxy" "$USE_MIDDLE_PROXY"
+  ask_yes_no ENABLE_LOGS "Enable nginx/Docker access logs" "$ENABLE_LOGS"
+  ask_yes_no ENABLE_DOCKER_HARDENING "Enable Docker hardening and healthcheck" "$ENABLE_DOCKER_HARDENING"
+  ask_yes_no ENABLE_HIGH_LOAD_TUNING "Enable high-load tuning for many clients" "$ENABLE_HIGH_LOAD_TUNING"
+}
+
+main() {
+  need_root
+  load_config_if_exists
+  interactive_inputs
+  validate_inputs
+  save_config
+
+  if ! have curl || ! have ss || ! have getent; then
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl iproute2 libc-bin
+  fi
+
+  PUBLIC_IP="$(public_ipv4)"
+  [[ "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Cannot detect public IPv4."
+
+  say
+  say "[01] DNS and port preflight"
+  say "server_public_ipv4=$PUBLIC_IP"
+  say "domain_ipv4s:"
+  domain_ipv4s "$DOMAIN" || true
+  if ! domain_ipv4s "$DOMAIN" | grep -Fxq "$PUBLIC_IP"; then
+    die "DNS A record for $DOMAIN does not point to this server IPv4 $PUBLIC_IP."
+  fi
+  check_port_clean_or_nginx 80
+  check_port_clean_or_nginx 443
+
+  print_plan
+  confirm_plan
+
+  if step_done packages; then
+    say "[02] Install packages (already done)"
+  else
+    say "[02] Install packages"
+    install_packages
+    mark_done packages
+  fi
+
+  if step_done docker_image; then
+    say "[03] Check Docker image (already done)"
+  else
+    say "[03] Check Docker image"
+    check_docker_image
+    mark_done docker_image
+  fi
+
+  if step_done high_load; then
+    say "[04] High-load tuning (already done)"
+  else
+    say "[04] High-load tuning"
+    configure_high_load
+    mark_done high_load
+  fi
+
+  if step_done cert; then
+    say "[05] nginx HTTP and certificate (already done)"
+  else
+    say "[05] nginx HTTP and certificate"
+    write_mask_site_http_only
+    issue_certificate
+    mark_done cert
+  fi
+
+  if step_done config; then
+    say "[06] Telemt config and nginx SNI (already done)"
+  else
+    say "[06] Telemt config and nginx SNI"
+    ensure_secret
+    write_telemt_config
+    write_compose
+    write_nginx_full_config
+    write_firewall_hints
+    mark_done config
+  fi
+
+  say "[07] Start Telemt"
+  start_telemt
+
+  say "[08] Validate"
+  validate_install
+
+  cat <<EOF
+
+Done.
+
+Proxy link:
+$(cat /root/telemt-proxy-link.txt 2>/dev/null || true)
+
+Files:
+  config:       $INSTALL_DIR/telemt.toml
+  compose:      $INSTALL_DIR/docker-compose.yml
+  secret:       $SECRET_FILE
+  saved input:  $SAVED_CONFIG
+  link:         /root/telemt-proxy-link.txt
+
+Commands:
+  cd $INSTALL_DIR
+  docker compose ps || docker-compose ps
+  curl -fsS http://127.0.0.1:9091/v1/users | jq
+EOF
+}
+
+main "$@"
