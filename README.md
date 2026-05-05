@@ -78,6 +78,12 @@ chmod +x ./install_docker-telemt.sh
 sudo ./install_docker-telemt.sh
 ```
 
+Русский интерфейс установщика:
+
+```bash
+sudo ./install_docker-telemt.sh -lang ru
+```
+
 Если `telemt-local:<tag>` ещё не собран, установщик сам запустит `build.sh` из этого же каталога. Отдельно запускать `build.sh` перед установкой больше не обязательно.
 
 Если image находится в registry:
@@ -229,6 +235,12 @@ Normal run:
 ```bash
 chmod +x ./install_docker-telemt.sh
 sudo ./install_docker-telemt.sh
+```
+
+Russian installer UI:
+
+```bash
+sudo ./install_docker-telemt.sh -lang ru
 ```
 
 If `telemt-local:<tag>` is not built yet, the installer runs `build.sh` from the same directory automatically. Running `build.sh` before the installer is no longer required.

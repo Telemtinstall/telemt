@@ -20,17 +20,100 @@ ENABLE_DOCKER_HARDENING="${ENABLE_DOCKER_HARDENING:-yes}"
 ENABLE_HIGH_LOAD_TUNING="${ENABLE_HIGH_LOAD_TUNING:-no}"
 AUTO_BUILD_IMAGE="${AUTO_BUILD_IMAGE:-yes}"
 MASK_SITE_MODE="${MASK_SITE_MODE:-fancy}"
+SCRIPT_LANG="${SCRIPT_LANG:-en}"
 ASSUME_YES="${ASSUME_YES:-0}"
 
 PUBLIC_IP=""
+SCRIPT_LANG_FROM_CLI="0"
 
 say() {
   printf '%s\n' "$*"
 }
 
 die() {
-  printf 'ERROR: %s\n' "$*" >&2
+  if [ "${SCRIPT_LANG:-en}" = "ru" ]; then
+    printf 'ОШИБКА: %s\n' "$*" >&2
+  else
+    printf 'ERROR: %s\n' "$*" >&2
+  fi
   exit 1
+}
+
+is_ru() {
+  [ "${SCRIPT_LANG:-en}" = "ru" ]
+}
+
+lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+normalize_script_lang() {
+  case "$(lower "$1")" in
+    ru|rus|russian|рус|русский) printf 'ru' ;;
+    en|eng|english|'') printf 'en' ;;
+    *) return 1 ;;
+  esac
+}
+
+usage() {
+  if is_ru; then
+    cat <<'EOF'
+Использование:
+  ./install_docker-telemt.sh [-lang ru|en]
+
+Примеры:
+  sudo ./install_docker-telemt.sh
+  sudo ./install_docker-telemt.sh -lang ru
+  sudo ./install_docker-telemt.sh --lang en
+
+Опции:
+  -lang, --lang   Язык интерфейса установщика: en или ru.
+  -h, --help      Показать эту справку.
+EOF
+    return 0
+  fi
+
+  cat <<'EOF'
+Usage:
+  ./install_docker-telemt.sh [-lang ru|en]
+
+Examples:
+  sudo ./install_docker-telemt.sh
+  sudo ./install_docker-telemt.sh -lang ru
+  sudo ./install_docker-telemt.sh --lang en
+
+Options:
+  -lang, --lang   Installer interface language: en or ru.
+  -h, --help      Show this help.
+EOF
+}
+
+parse_args() {
+  local value
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -lang|--lang)
+        shift
+        [ "$#" -gt 0 ] || die "Missing value for -lang. Use ru or en."
+        value="$1"
+        SCRIPT_LANG="$(normalize_script_lang "$value")" || die "Bad language: $value. Use ru or en."
+        SCRIPT_LANG_FROM_CLI="1"
+        ;;
+      -lang=*|--lang=*)
+        value="${1#*=}"
+        SCRIPT_LANG="$(normalize_script_lang "$value")" || die "Bad language: $value. Use ru or en."
+        SCRIPT_LANG_FROM_CLI="1"
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        die "Unknown argument: $1"
+        ;;
+    esac
+    shift
+  done
 }
 
 have() {
@@ -38,11 +121,17 @@ have() {
 }
 
 need_root() {
-  [ "$(id -u)" -eq 0 ] || die "Run as root."
+  if [ "$(id -u)" -ne 0 ]; then
+    if is_ru; then
+      die "Запустите от root."
+    else
+      die "Run as root."
+    fi
+  fi
 }
 
 normalize_yes_no() {
-  case "${1,,}" in
+  case "$(lower "$1")" in
     y|yes|д|да|true|1) printf 'yes' ;;
     n|no|н|нет|false|0|'') printf 'no' ;;
     *) return 1 ;;
@@ -82,18 +171,26 @@ ask_yes_no() {
     fi
   fi
   while true; do
-    read -r -p "$prompt yes/no [$default]: " value
+    if is_ru; then
+      read -r -p "$prompt yes/no/да/нет [$default]: " value
+    else
+      read -r -p "$prompt yes/no [$default]: " value
+    fi
     value="${value:-$default}"
     if normalized="$(normalize_yes_no "$value")"; then
       printf -v "$var" '%s' "$normalized"
       return 0
     fi
-    say "Please answer yes or no."
+    if is_ru; then
+      say "Ответьте yes/no или да/нет."
+    else
+      say "Please answer yes or no."
+    fi
   done
 }
 
 normalize_mask_site_mode() {
-  case "${1,,}" in
+  case "$(lower "$1")" in
     fancy|pretty|beautiful|красивую|красивая|красиво|yes|y|да|д) printf 'fancy' ;;
     empty|blank|пустую|пустая|пусто|no|n|нет|н) printf 'empty' ;;
     *) return 1 ;;
@@ -107,13 +204,21 @@ ask_mask_site_mode() {
     return 0
   fi
   while true; do
-    read -r -p "Mask site page: fancy or empty [$MASK_SITE_MODE]: " value
+    if is_ru; then
+      read -r -p "Маскировочная страница: fancy=красивая или empty=пустая [$MASK_SITE_MODE]: " value
+    else
+      read -r -p "Mask site page: fancy or empty [$MASK_SITE_MODE]: " value
+    fi
     value="${value:-$MASK_SITE_MODE}"
     if normalized="$(normalize_mask_site_mode "$value")"; then
       MASK_SITE_MODE="$normalized"
       return 0
     fi
-    say "Please answer fancy or empty."
+    if is_ru; then
+      say "Ответьте fancy или empty."
+    else
+      say "Please answer fancy or empty."
+    fi
   done
 }
 
@@ -133,12 +238,14 @@ validate_inputs() {
   normalize_yes_no "$ENABLE_HIGH_LOAD_TUNING" >/dev/null || die "Bad ENABLE_HIGH_LOAD_TUNING"
   normalize_yes_no "$AUTO_BUILD_IMAGE" >/dev/null || die "Bad AUTO_BUILD_IMAGE"
   normalize_mask_site_mode "$MASK_SITE_MODE" >/dev/null || die "Bad MASK_SITE_MODE"
+  normalize_script_lang "$SCRIPT_LANG" >/dev/null || die "Bad SCRIPT_LANG"
   USE_MIDDLE_PROXY="$(normalize_yes_no "$USE_MIDDLE_PROXY")"
   ENABLE_LOGS="$(normalize_yes_no "$ENABLE_LOGS")"
   ENABLE_DOCKER_HARDENING="$(normalize_yes_no "$ENABLE_DOCKER_HARDENING")"
   ENABLE_HIGH_LOAD_TUNING="$(normalize_yes_no "$ENABLE_HIGH_LOAD_TUNING")"
   AUTO_BUILD_IMAGE="$(normalize_yes_no "$AUTO_BUILD_IMAGE")"
   MASK_SITE_MODE="$(normalize_mask_site_mode "$MASK_SITE_MODE")"
+  SCRIPT_LANG="$(normalize_script_lang "$SCRIPT_LANG")"
 }
 
 save_config() {
@@ -157,12 +264,17 @@ ENABLE_DOCKER_HARDENING=$(printf '%q' "$ENABLE_DOCKER_HARDENING")
 ENABLE_HIGH_LOAD_TUNING=$(printf '%q' "$ENABLE_HIGH_LOAD_TUNING")
 AUTO_BUILD_IMAGE=$(printf '%q' "$AUTO_BUILD_IMAGE")
 MASK_SITE_MODE=$(printf '%q' "$MASK_SITE_MODE")
+SCRIPT_LANG=$(printf '%q' "$SCRIPT_LANG")
 EOF
 }
 
 load_config_if_exists() {
   if [ -f "$SAVED_CONFIG" ]; then
-    say "Resume config found: $SAVED_CONFIG"
+    if is_ru; then
+      say "Найден сохраненный конфиг: $SAVED_CONFIG"
+    else
+      say "Resume config found: $SAVED_CONFIG"
+    fi
     # shellcheck disable=SC1090
     source "$SAVED_CONFIG"
   fi
@@ -903,6 +1015,72 @@ validate_install() {
 }
 
 print_plan() {
+  if is_ru; then
+    cat <<EOF
+
+План установки:
+  домен:              $DOMAIN
+  публичный IPv4:     $PUBLIC_IP
+  email:              $EMAIL
+  Docker image:       $TELEMT_IMAGE
+  автосборка image:   $AUTO_BUILD_IMAGE
+  страница маскировки: $MASK_SITE_MODE
+  пользователь Telemt: $TELEMT_USER
+  лимит подключений:  $TELEMT_MAX_TCP_CONNS
+  ad_tag:             $([ -n "$AD_TAG" ] && printf yes || printf no)
+  middle_proxy:       $USE_MIDDLE_PROXY
+  логи включены:      $ENABLE_LOGS
+  Docker hardening:   $ENABLE_DOCKER_HARDENING
+  high-load tuning:   $ENABLE_HIGH_LOAD_TUNING
+
+Установщик настроит:
+  - nginx HTTP -> HTTPS redirect
+  - nginx SNI stream на публичном 443/tcp
+  - HTTPS mask site на 127.0.0.1:8443 ($MASK_SITE_MODE page)
+  - Telemt внутри Docker на 127.0.0.1:1443
+  - Telemt API на 127.0.0.1:9091
+  - Telemt metrics на 127.0.0.1:9090
+  - Let's Encrypt сертификат и certbot renewal timer
+  - опциональный Docker runtime hardening и healthcheck
+EOF
+
+    if [ "$ENABLE_DOCKER_HARDENING" = "yes" ]; then
+      cat <<'EOF'
+
+Docker hardening включит:
+  - read_only root filesystem
+  - cap_drop: ALL
+  - no-new-privileges
+  - tmpfs для /tmp
+  - pids/memory/cpu limits
+  - Docker healthcheck
+EOF
+    else
+      cat <<'EOF'
+
+Docker hardening выключен:
+  - filesystem контейнера будет writable
+  - Linux capabilities не будут сброшены этим compose-файлом
+  - Docker healthcheck выключен в compose
+EOF
+    fi
+
+    if [ "$ENABLE_HIGH_LOAD_TUNING" = "yes" ]; then
+      cat <<'EOF'
+
+High-load tuning запишет /etc/sysctl.d/99-telemt-high-load.conf:
+  - net.core.somaxconn = 65535
+  - net.ipv4.tcp_max_syn_backlog = 65535
+  - net.ipv4.tcp_keepalive_time = 300
+  - net.ipv4.tcp_keepalive_intvl = 30
+  - net.ipv4.tcp_keepalive_probes = 5
+  - fs.file-max = 2097152
+  - BBR/fq, если поддерживается ядром
+EOF
+    fi
+    return 0
+  fi
+
   cat <<EOF
 
 Install plan:
@@ -970,15 +1148,46 @@ EOF
 confirm_plan() {
   [ "$ASSUME_YES" = "1" ] && return 0
   local answer
-  read -r -p "Type y or yes to continue: " answer
-  case "${answer,,}" in
+  if is_ru; then
+    read -r -p "Введите y, yes или да для продолжения: " answer
+  else
+    read -r -p "Type y or yes to continue: " answer
+  fi
+  case "$(lower "$answer")" in
     y|yes|д|да) ;;
-    *) die "Cancelled." ;;
+    *)
+      if is_ru; then
+        die "Отменено."
+      else
+        die "Cancelled."
+      fi
+      ;;
   esac
 }
 
 interactive_inputs() {
-  cat <<'EOF'
+  if is_ru; then
+    cat <<'EOF'
+Установщик Telemt Docker.
+
+Перед запуском:
+  1. Используйте чистый Debian/Ubuntu сервер.
+  2. Создайте DNS A-запись: <домен> -> IPv4 этого сервера.
+  3. Убедитесь, что порты 80/tcp и 443/tcp доступны из интернета.
+  4. Держите build.sh рядом с этим установщиком; image будет собран автоматически, если его нет.
+
+EOF
+
+    ask_default DOMAIN "Домен прокси" "$DOMAIN"
+    EMAIL="${EMAIL:-admin@$DOMAIN}"
+    ask_default EMAIL "Email для Let's Encrypt" "$EMAIL"
+    ask_default TELEMT_IMAGE "Docker image Telemt" "$TELEMT_IMAGE"
+    ask_mask_site_mode
+    ask_default TELEMT_USER "Имя пользователя Telemt" "$TELEMT_USER"
+    ask_default TELEMT_MAX_TCP_CONNS "Максимум подключений Telemt" "$TELEMT_MAX_TCP_CONNS"
+    ask_default AD_TAG "MTProxy ad_tag, Enter = пропустить" "$AD_TAG"
+  else
+    cat <<'EOF'
 Telemt Docker installer.
 
 Before running:
@@ -989,14 +1198,15 @@ Before running:
 
 EOF
 
-  ask_default DOMAIN "Proxy domain" "$DOMAIN"
-  EMAIL="${EMAIL:-admin@$DOMAIN}"
-  ask_default EMAIL "Let's Encrypt email" "$EMAIL"
-  ask_default TELEMT_IMAGE "Telemt Docker image" "$TELEMT_IMAGE"
-  ask_mask_site_mode
-  ask_default TELEMT_USER "Telemt user name" "$TELEMT_USER"
-  ask_default TELEMT_MAX_TCP_CONNS "Max Telemt connections" "$TELEMT_MAX_TCP_CONNS"
-  ask_default AD_TAG "MTProxy ad_tag, Enter = skip" "$AD_TAG"
+    ask_default DOMAIN "Proxy domain" "$DOMAIN"
+    EMAIL="${EMAIL:-admin@$DOMAIN}"
+    ask_default EMAIL "Let's Encrypt email" "$EMAIL"
+    ask_default TELEMT_IMAGE "Telemt Docker image" "$TELEMT_IMAGE"
+    ask_mask_site_mode
+    ask_default TELEMT_USER "Telemt user name" "$TELEMT_USER"
+    ask_default TELEMT_MAX_TCP_CONNS "Max Telemt connections" "$TELEMT_MAX_TCP_CONNS"
+    ask_default AD_TAG "MTProxy ad_tag, Enter = skip" "$AD_TAG"
+  fi
 
   if [ -z "$USE_MIDDLE_PROXY" ]; then
     if [ -n "$AD_TAG" ]; then
@@ -1005,15 +1215,27 @@ EOF
       USE_MIDDLE_PROXY="no"
     fi
   fi
-  ask_yes_no USE_MIDDLE_PROXY "Use Telegram middle proxy" "$USE_MIDDLE_PROXY"
-  ask_yes_no ENABLE_LOGS "Enable nginx/Docker access logs" "$ENABLE_LOGS"
-  ask_yes_no ENABLE_DOCKER_HARDENING "Enable Docker hardening and healthcheck" "$ENABLE_DOCKER_HARDENING"
-  ask_yes_no ENABLE_HIGH_LOAD_TUNING "Enable high-load tuning for many clients" "$ENABLE_HIGH_LOAD_TUNING"
+  if is_ru; then
+    ask_yes_no USE_MIDDLE_PROXY "Использовать Telegram middle proxy" "$USE_MIDDLE_PROXY"
+    ask_yes_no ENABLE_LOGS "Включить access-логи nginx/Docker" "$ENABLE_LOGS"
+    ask_yes_no ENABLE_DOCKER_HARDENING "Включить Docker hardening и healthcheck" "$ENABLE_DOCKER_HARDENING"
+    ask_yes_no ENABLE_HIGH_LOAD_TUNING "Включить high-load tuning для большого числа клиентов" "$ENABLE_HIGH_LOAD_TUNING"
+  else
+    ask_yes_no USE_MIDDLE_PROXY "Use Telegram middle proxy" "$USE_MIDDLE_PROXY"
+    ask_yes_no ENABLE_LOGS "Enable nginx/Docker access logs" "$ENABLE_LOGS"
+    ask_yes_no ENABLE_DOCKER_HARDENING "Enable Docker hardening and healthcheck" "$ENABLE_DOCKER_HARDENING"
+    ask_yes_no ENABLE_HIGH_LOAD_TUNING "Enable high-load tuning for many clients" "$ENABLE_HIGH_LOAD_TUNING"
+  fi
 }
 
 main() {
+  parse_args "$@"
   need_root
+  local requested_script_lang="$SCRIPT_LANG"
   load_config_if_exists
+  if [ "$SCRIPT_LANG_FROM_CLI" = "1" ]; then
+    SCRIPT_LANG="$requested_script_lang"
+  fi
   interactive_inputs
   validate_inputs
   save_config
@@ -1024,15 +1246,31 @@ main() {
   fi
 
   PUBLIC_IP="$(public_ipv4)"
-  [[ "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Cannot detect public IPv4."
+  if ! [[ "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    if is_ru; then
+      die "Не удалось определить публичный IPv4."
+    else
+      die "Cannot detect public IPv4."
+    fi
+  fi
 
   say
-  say "[01] DNS and port preflight"
-  say "server_public_ipv4=$PUBLIC_IP"
-  say "domain_ipv4s:"
+  if is_ru; then
+    say "[01] DNS и проверка портов"
+    say "server_public_ipv4=$PUBLIC_IP"
+    say "IPv4 домена:"
+  else
+    say "[01] DNS and port preflight"
+    say "server_public_ipv4=$PUBLIC_IP"
+    say "domain_ipv4s:"
+  fi
   domain_ipv4s "$DOMAIN" || true
   if ! domain_ipv4s "$DOMAIN" | grep -Fxq "$PUBLIC_IP"; then
-    die "DNS A record for $DOMAIN does not point to this server IPv4 $PUBLIC_IP."
+    if is_ru; then
+      die "DNS A-запись для $DOMAIN не указывает на IPv4 этого сервера: $PUBLIC_IP."
+    else
+      die "DNS A record for $DOMAIN does not point to this server IPv4 $PUBLIC_IP."
+    fi
   fi
   check_port_clean_or_nginx 80
   check_port_clean_or_nginx 443
@@ -1041,43 +1279,43 @@ main() {
   confirm_plan
 
   if step_done packages; then
-    say "[02] Install packages (already done)"
+    is_ru && say "[02] Установка пакетов (уже выполнено)" || say "[02] Install packages (already done)"
   else
-    say "[02] Install packages"
+    is_ru && say "[02] Установка пакетов" || say "[02] Install packages"
     install_packages
     mark_done packages
   fi
   ensure_docker_available
 
   if step_done docker_image; then
-    say "[03] Check Docker image (already done)"
+    is_ru && say "[03] Проверка Docker image (уже выполнено)" || say "[03] Check Docker image (already done)"
   else
-    say "[03] Check Docker image"
+    is_ru && say "[03] Проверка Docker image" || say "[03] Check Docker image"
     check_docker_image
     mark_done docker_image
   fi
 
   if step_done high_load; then
-    say "[04] High-load tuning (already done)"
+    is_ru && say "[04] High-load tuning (уже выполнено)" || say "[04] High-load tuning (already done)"
   else
-    say "[04] High-load tuning"
+    is_ru && say "[04] High-load tuning" || say "[04] High-load tuning"
     configure_high_load
     mark_done high_load
   fi
 
   if step_done cert; then
-    say "[05] nginx HTTP and certificate (already done)"
+    is_ru && say "[05] nginx HTTP и сертификат (уже выполнено)" || say "[05] nginx HTTP and certificate (already done)"
   else
-    say "[05] nginx HTTP and certificate"
+    is_ru && say "[05] nginx HTTP и сертификат" || say "[05] nginx HTTP and certificate"
     write_mask_site_http_only
     issue_certificate
     mark_done cert
   fi
 
   if step_done config; then
-    say "[06] Telemt config and nginx SNI (already done)"
+    is_ru && say "[06] Конфиг Telemt и nginx SNI (уже выполнено)" || say "[06] Telemt config and nginx SNI (already done)"
   else
-    say "[06] Telemt config and nginx SNI"
+    is_ru && say "[06] Конфиг Telemt и nginx SNI" || say "[06] Telemt config and nginx SNI"
     ensure_secret
     write_telemt_config
     write_compose
@@ -1087,13 +1325,34 @@ main() {
   fi
   fix_runtime_permissions
 
-  say "[07] Start Telemt"
+  is_ru && say "[07] Запуск Telemt" || say "[07] Start Telemt"
   start_telemt
 
-  say "[08] Validate"
+  is_ru && say "[08] Проверка" || say "[08] Validate"
   validate_install
 
-  cat <<EOF
+  if is_ru; then
+    cat <<EOF
+
+Готово.
+
+Ссылка прокси:
+$(cat /root/telemt-proxy-link.txt 2>/dev/null || true)
+
+Файлы:
+  конфиг:       $INSTALL_DIR/telemt.toml
+  compose:      $INSTALL_DIR/docker-compose.yml
+  секрет:       $SECRET_FILE
+  сохраненный ввод: $SAVED_CONFIG
+  ссылка:       /root/telemt-proxy-link.txt
+
+Команды:
+  cd $INSTALL_DIR
+  docker compose ps || docker-compose ps
+  curl -fsS http://127.0.0.1:9091/v1/users | jq
+EOF
+  else
+    cat <<EOF
 
 Done.
 
@@ -1112,6 +1371,7 @@ Commands:
   docker compose ps || docker-compose ps
   curl -fsS http://127.0.0.1:9091/v1/users | jq
 EOF
+  fi
 }
 
 main "$@"
