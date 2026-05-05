@@ -64,6 +64,7 @@ docker run --rm --entrypoint /app/telemt telemt-local:3.4.10 --version
 - Telemt API только на `127.0.0.1:9091`;
 - Telemt metrics только на `127.0.0.1:9090`;
 - Let's Encrypt сертификат и `certbot.timer`;
+- выбор маскировочной страницы: красивая заглушка или пустой HTML;
 - Docker hardening и healthcheck с отдельным вопросом;
 - отключение runtime-логов по умолчанию;
 - опционально `ad_tag`, `middle_proxy`, high-load tuning.
@@ -91,6 +92,7 @@ sudo TELEMT_IMAGE=ghcr.io/Telemtinstall/telemt:3.4.10 ./install_docker-telemt.sh
 Proxy domain
 Let's Encrypt email
 Telemt Docker image
+Mask site page: fancy or empty
 Telemt user name
 Max Telemt connections
 MTProxy ad_tag, Enter = skip
@@ -100,7 +102,7 @@ Enable Docker hardening and healthcheck
 Enable high-load tuning for many clients
 ```
 
-По умолчанию логи доступа выключены. Docker hardening включен по умолчанию, но его можно отключить. High-load tuning выключен и применяется только после отдельного подтверждения.
+По умолчанию используется красивая заглушка. Если выбрать `empty`, nginx будет отдавать пустой `index.html` с `200 OK`, без видимого текста. Логи доступа выключены. Docker hardening включен по умолчанию, но его можно отключить. High-load tuning выключен и применяется только после отдельного подтверждения.
 
 Если Docker hardening включен, compose добавляет:
 
@@ -136,6 +138,7 @@ TELEMT_REPOSITORY  GitHub repo с release assets. Default: telemt/telemt
 TELEMT_VERSION     Release tag или latest. Default: latest
 IMAGE              Имя image. Default: telemt-local
 AUTO_BUILD_IMAGE   yes автоматически собирает image, если его нет. Default: yes
+MASK_SITE_MODE     fancy или empty. Default: fancy
 TARGET             prod или debug. Default: prod
 PLATFORM           linux/amd64 или linux/arm64, опционально
 NO_CACHE           1 отключает build cache
@@ -214,6 +217,7 @@ docker run --rm --entrypoint /app/telemt telemt-local:3.4.10 --version
 - Telemt API only on `127.0.0.1:9091`;
 - Telemt metrics only on `127.0.0.1:9090`;
 - Let's Encrypt certificate and `certbot.timer`;
+- mask page choice: playful placeholder or empty HTML;
 - Docker hardening and healthcheck with a dedicated prompt;
 - runtime logs disabled by default;
 - optional `ad_tag`, `middle_proxy`, and high-load tuning.
@@ -241,6 +245,7 @@ The script asks:
 Proxy domain
 Let's Encrypt email
 Telemt Docker image
+Mask site page: fancy or empty
 Telemt user name
 Max Telemt connections
 MTProxy ad_tag, Enter = skip
@@ -250,7 +255,7 @@ Enable Docker hardening and healthcheck
 Enable high-load tuning for many clients
 ```
 
-Access logs are disabled by default. Docker hardening is enabled by default, but can be disabled. High-load tuning is disabled and is applied only after explicit confirmation.
+The playful placeholder is used by default. If `empty` is selected, nginx serves an empty `index.html` with `200 OK` and no visible text. Access logs are disabled by default. Docker hardening is enabled by default, but can be disabled. High-load tuning is disabled and is applied only after explicit confirmation.
 
 When Docker hardening is enabled, compose adds:
 
@@ -286,6 +291,7 @@ TELEMT_REPOSITORY  GitHub repo with release assets. Default: telemt/telemt
 TELEMT_VERSION     Release tag or latest. Default: latest
 IMAGE              Image name. Default: telemt-local
 AUTO_BUILD_IMAGE   yes builds the image automatically when missing. Default: yes
+MASK_SITE_MODE     fancy or empty. Default: fancy
 TARGET             prod or debug. Default: prod
 PLATFORM           linux/amd64 or linux/arm64, optional
 NO_CACHE           1 disables build cache

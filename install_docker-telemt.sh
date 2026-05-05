@@ -19,6 +19,7 @@ ENABLE_LOGS="${ENABLE_LOGS:-no}"
 ENABLE_DOCKER_HARDENING="${ENABLE_DOCKER_HARDENING:-yes}"
 ENABLE_HIGH_LOAD_TUNING="${ENABLE_HIGH_LOAD_TUNING:-no}"
 AUTO_BUILD_IMAGE="${AUTO_BUILD_IMAGE:-yes}"
+MASK_SITE_MODE="${MASK_SITE_MODE:-fancy}"
 ASSUME_YES="${ASSUME_YES:-0}"
 
 PUBLIC_IP=""
@@ -91,6 +92,31 @@ ask_yes_no() {
   done
 }
 
+normalize_mask_site_mode() {
+  case "${1,,}" in
+    fancy|pretty|beautiful|красивую|красивая|красиво|yes|y|да|д) printf 'fancy' ;;
+    empty|blank|пустую|пустая|пусто|no|n|нет|н) printf 'empty' ;;
+    *) return 1 ;;
+  esac
+}
+
+ask_mask_site_mode() {
+  local value normalized
+  if [ "$ASSUME_YES" = "1" ]; then
+    MASK_SITE_MODE="$(normalize_mask_site_mode "$MASK_SITE_MODE")"
+    return 0
+  fi
+  while true; do
+    read -r -p "Mask site page: fancy or empty [$MASK_SITE_MODE]: " value
+    value="${value:-$MASK_SITE_MODE}"
+    if normalized="$(normalize_mask_site_mode "$value")"; then
+      MASK_SITE_MODE="$normalized"
+      return 0
+    fi
+    say "Please answer fancy or empty."
+  done
+}
+
 validate_inputs() {
   [[ "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] || die "Bad domain: $DOMAIN"
   [[ "$EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || die "Bad email: $EMAIL"
@@ -106,11 +132,13 @@ validate_inputs() {
   normalize_yes_no "$ENABLE_DOCKER_HARDENING" >/dev/null || die "Bad ENABLE_DOCKER_HARDENING"
   normalize_yes_no "$ENABLE_HIGH_LOAD_TUNING" >/dev/null || die "Bad ENABLE_HIGH_LOAD_TUNING"
   normalize_yes_no "$AUTO_BUILD_IMAGE" >/dev/null || die "Bad AUTO_BUILD_IMAGE"
+  normalize_mask_site_mode "$MASK_SITE_MODE" >/dev/null || die "Bad MASK_SITE_MODE"
   USE_MIDDLE_PROXY="$(normalize_yes_no "$USE_MIDDLE_PROXY")"
   ENABLE_LOGS="$(normalize_yes_no "$ENABLE_LOGS")"
   ENABLE_DOCKER_HARDENING="$(normalize_yes_no "$ENABLE_DOCKER_HARDENING")"
   ENABLE_HIGH_LOAD_TUNING="$(normalize_yes_no "$ENABLE_HIGH_LOAD_TUNING")"
   AUTO_BUILD_IMAGE="$(normalize_yes_no "$AUTO_BUILD_IMAGE")"
+  MASK_SITE_MODE="$(normalize_mask_site_mode "$MASK_SITE_MODE")"
 }
 
 save_config() {
@@ -128,6 +156,7 @@ ENABLE_LOGS=$(printf '%q' "$ENABLE_LOGS")
 ENABLE_DOCKER_HARDENING=$(printf '%q' "$ENABLE_DOCKER_HARDENING")
 ENABLE_HIGH_LOAD_TUNING=$(printf '%q' "$ENABLE_HIGH_LOAD_TUNING")
 AUTO_BUILD_IMAGE=$(printf '%q' "$AUTO_BUILD_IMAGE")
+MASK_SITE_MODE=$(printf '%q' "$MASK_SITE_MODE")
 EOF
 }
 
@@ -398,7 +427,11 @@ write_mask_site_http_only() {
   install_started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
   install -d -m 0755 "/var/www/$DOMAIN/.well-known/acme-challenge"
-  cat > "/var/www/$DOMAIN/index.html" <<EOF
+
+  if [ "$MASK_SITE_MODE" = "empty" ]; then
+    : > "/var/www/$DOMAIN/index.html"
+  else
+    cat > "/var/www/$DOMAIN/index.html" <<EOF
 <!doctype html>
 <html lang="ru">
 <head>
@@ -582,6 +615,7 @@ write_mask_site_http_only() {
 </body>
 </html>
 EOF
+  fi
   chmod 0644 "/var/www/$DOMAIN/index.html"
 
   rm -f /etc/nginx/sites-enabled/default
@@ -877,6 +911,7 @@ Install plan:
   email:              $EMAIL
   docker image:       $TELEMT_IMAGE
   auto-build image:   $AUTO_BUILD_IMAGE
+  mask site page:     $MASK_SITE_MODE
   Telemt user:        $TELEMT_USER
   connection limit:   $TELEMT_MAX_TCP_CONNS
   ad_tag:             $([ -n "$AD_TAG" ] && printf yes || printf no)
@@ -888,7 +923,7 @@ Install plan:
 This installer will configure:
   - nginx HTTP -> HTTPS redirect
   - nginx SNI stream on public 443/tcp
-  - HTTPS mask site on 127.0.0.1:8443
+  - HTTPS mask site on 127.0.0.1:8443 ($MASK_SITE_MODE page)
   - Telemt inside Docker on 127.0.0.1:1443
   - Telemt API on 127.0.0.1:9091
   - Telemt metrics on 127.0.0.1:9090
@@ -958,6 +993,7 @@ EOF
   EMAIL="${EMAIL:-admin@$DOMAIN}"
   ask_default EMAIL "Let's Encrypt email" "$EMAIL"
   ask_default TELEMT_IMAGE "Telemt Docker image" "$TELEMT_IMAGE"
+  ask_mask_site_mode
   ask_default TELEMT_USER "Telemt user name" "$TELEMT_USER"
   ask_default TELEMT_MAX_TCP_CONNS "Max Telemt connections" "$TELEMT_MAX_TCP_CONNS"
   ask_default AD_TAG "MTProxy ad_tag, Enter = skip" "$AD_TAG"
