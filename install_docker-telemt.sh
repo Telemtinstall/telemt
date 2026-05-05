@@ -62,9 +62,9 @@ usage() {
   ./install_docker-telemt.sh [-lang ru|en]
 
 Примеры:
-  sudo ./install_docker-telemt.sh
-  sudo ./install_docker-telemt.sh -lang ru
-  sudo ./install_docker-telemt.sh --lang en
+  ./install_docker-telemt.sh
+  ./install_docker-telemt.sh -lang ru
+  ./install_docker-telemt.sh --lang en
 
 Опции:
   -lang, --lang   Язык интерфейса установщика: en или ru.
@@ -78,9 +78,9 @@ Usage:
   ./install_docker-telemt.sh [-lang ru|en]
 
 Examples:
-  sudo ./install_docker-telemt.sh
-  sudo ./install_docker-telemt.sh -lang ru
-  sudo ./install_docker-telemt.sh --lang en
+  ./install_docker-telemt.sh
+  ./install_docker-telemt.sh -lang ru
+  ./install_docker-telemt.sh --lang en
 
 Options:
   -lang, --lang   Installer interface language: en or ru.

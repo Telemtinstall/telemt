@@ -75,13 +75,25 @@ docker run --rm --entrypoint /app/telemt telemt-local:3.4.10 --version
 
 ```bash
 chmod +x ./install_docker-telemt.sh
-sudo ./install_docker-telemt.sh
+./install_docker-telemt.sh
 ```
 
 Русский интерфейс установщика:
 
 ```bash
-sudo ./install_docker-telemt.sh -lang ru
+./install_docker-telemt.sh -lang ru
+```
+
+На чистом VPS обычно вход выполняется сразу под `root`, поэтому `sudo` не нужен и может быть не установлен. Если вы запускаете не под `root`, используйте:
+
+```bash
+if [ "$(id -u)" -eq 0 ]; then
+  ./install_docker-telemt.sh -lang ru
+elif command -v sudo >/dev/null 2>&1; then
+  sudo ./install_docker-telemt.sh -lang ru
+else
+  su -c "./install_docker-telemt.sh -lang ru"
+fi
 ```
 
 Если `telemt-local:<tag>` ещё не собран, установщик сам запустит `build.sh` из этого же каталога. Отдельно запускать `build.sh` перед установкой больше не обязательно.
@@ -89,7 +101,7 @@ sudo ./install_docker-telemt.sh -lang ru
 Если image находится в registry:
 
 ```bash
-sudo TELEMT_IMAGE=ghcr.io/Telemtinstall/telemt:3.4.10 ./install_docker-telemt.sh
+TELEMT_IMAGE=ghcr.io/Telemtinstall/telemt:3.4.10 ./install_docker-telemt.sh
 ```
 
 Скрипт спросит:
@@ -234,13 +246,25 @@ Normal run:
 
 ```bash
 chmod +x ./install_docker-telemt.sh
-sudo ./install_docker-telemt.sh
+./install_docker-telemt.sh
 ```
 
 Russian installer UI:
 
 ```bash
-sudo ./install_docker-telemt.sh -lang ru
+./install_docker-telemt.sh -lang ru
+```
+
+On a clean VPS you usually log in as `root`, so `sudo` is not needed and may not be installed. If you are not root, use:
+
+```bash
+if [ "$(id -u)" -eq 0 ]; then
+  ./install_docker-telemt.sh -lang ru
+elif command -v sudo >/dev/null 2>&1; then
+  sudo ./install_docker-telemt.sh -lang ru
+else
+  su -c "./install_docker-telemt.sh -lang ru"
+fi
 ```
 
 If `telemt-local:<tag>` is not built yet, the installer runs `build.sh` from the same directory automatically. Running `build.sh` before the installer is no longer required.
@@ -248,7 +272,7 @@ If `telemt-local:<tag>` is not built yet, the installer runs `build.sh` from the
 If the image is in a registry:
 
 ```bash
-sudo TELEMT_IMAGE=ghcr.io/Telemtinstall/telemt:3.4.10 ./install_docker-telemt.sh
+TELEMT_IMAGE=ghcr.io/Telemtinstall/telemt:3.4.10 ./install_docker-telemt.sh
 ```
 
 The script asks:
