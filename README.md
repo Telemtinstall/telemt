@@ -57,6 +57,7 @@ docker run --rm --entrypoint /app/telemt telemt-local:3.4.10 --version
 
 `install_docker-telemt.sh` ставит полный серверный слой вокруг Docker image:
 
+- архитектура `TLS-Fronting + TCP-Splitting` только для вашего домена;
 - nginx HTTP -> HTTPS redirect;
 - nginx SNI stream на внешнем `443/tcp`;
 - HTTPS mask site на `127.0.0.1:8443`;
@@ -68,6 +69,8 @@ docker run --rm --entrypoint /app/telemt telemt-local:3.4.10 --version
 - Docker hardening и healthcheck с отдельным вопросом;
 - отключение runtime-логов по умолчанию;
 - опционально `ad_tag`, `middle_proxy`, high-load tuning.
+
+В этой схеме обычный сканер или браузер без MTProxy-ключа получает HTTPS-сайт-заглушку с настоящим сертификатом вашего домена. Telemt не подменяет TLS и не делает MITM: он оставляет валидных MTProxy-клиентов внутри Telemt, а остальные TLS-соединения передаёт на mask site как TCP-поток.
 
 Перед запуском нужен чистый Debian/Ubuntu сервер, A-запись домена на IPv4 сервера и свободные `80/tcp`, `443/tcp`.
 
@@ -119,6 +122,15 @@ Enable nginx/Docker access logs
 Enable Docker hardening and healthcheck
 Enable high-load tuning for many clients
 ```
+
+В конце установки скрипт выполняет active probing проверку на вашем домене:
+
+```bash
+openssl s_client -connect <server_ipv4>:443 -servername <domain>
+curl -I --resolve <domain>:443:<server_ipv4> https://<domain>/
+```
+
+Результат сохраняется в `/root/telemt-active-probing-check.txt`. Если обычный HTTPS-запрос через IP сервера не получает корректный ответ, установка останавливается с ошибкой, потому что маскировочный слой работает неправильно.
 
 По умолчанию используется красивая заглушка. Если выбрать `empty`, nginx будет отдавать пустой `index.html` с `200 OK`, без видимого текста. Логи доступа выключены. Docker hardening включен по умолчанию, но его можно отключить. High-load tuning выключен и применяется только после отдельного подтверждения.
 
@@ -228,6 +240,7 @@ docker run --rm --entrypoint /app/telemt telemt-local:3.4.10 --version
 
 `install_docker-telemt.sh` installs the full server layer around the Docker image:
 
+- `TLS-Fronting + TCP-Splitting` architecture for your own domain only;
 - nginx HTTP -> HTTPS redirect;
 - nginx SNI stream on public `443/tcp`;
 - HTTPS mask site on `127.0.0.1:8443`;
@@ -239,6 +252,8 @@ docker run --rm --entrypoint /app/telemt telemt-local:3.4.10 --version
 - Docker hardening and healthcheck with a dedicated prompt;
 - runtime logs disabled by default;
 - optional `ad_tag`, `middle_proxy`, and high-load tuning.
+
+In this architecture, a normal scanner or browser without the MTProxy key receives the HTTPS mask site with a real certificate for your domain. Telemt does not replace TLS and does not perform MITM: valid MTProxy clients stay inside Telemt, while other TLS connections are relayed to the mask site as a TCP stream.
 
 Before running, use a clean Debian/Ubuntu server, create a DNS A record pointing to the server IPv4, and keep `80/tcp` and `443/tcp` free.
 
@@ -290,6 +305,15 @@ Enable nginx/Docker access logs
 Enable Docker hardening and healthcheck
 Enable high-load tuning for many clients
 ```
+
+At the end of the install, the script runs an active probing check against your own domain:
+
+```bash
+openssl s_client -connect <server_ipv4>:443 -servername <domain>
+curl -I --resolve <domain>:443:<server_ipv4> https://<domain>/
+```
+
+The result is saved to `/root/telemt-active-probing-check.txt`. If a normal HTTPS request through the server IP does not return a valid response, the installer stops with an error because the masking layer is not working correctly.
 
 The playful placeholder is used by default. If `empty` is selected, nginx serves an empty `index.html` with `200 OK` and no visible text. Access logs are disabled by default. Docker hardening is enabled by default, but can be disabled. High-load tuning is disabled and is applied only after explicit confirmation.
 

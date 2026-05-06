@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-SCRIPT_VERSION="2026-05-05"
+SCRIPT_VERSION="2026-05-06"
 INSTALL_DIR="${INSTALL_DIR:-/opt/telemt-docker}"
 STATE_FILE="${STATE_FILE:-/root/.install_docker_telemt.state}"
 SAVED_CONFIG="${SAVED_CONFIG:-/root/.install_docker_telemt.config}"
@@ -1029,7 +1029,52 @@ validate_install() {
   grep -q '"ok":true' /tmp/telemt-users.json
   grep -o 'tg://proxy[^"]*' /tmp/telemt-users.json > /root/telemt-proxy-link.txt || true
   chmod 600 /root/telemt-proxy-link.txt 2>/dev/null || true
-  curl -fsSIs --resolve "${DOMAIN}:443:${PUBLIC_IP}" "https://${DOMAIN}/" | head -n 12 || true
+
+  local probe_log="/root/telemt-active-probing-check.txt"
+  : > "$probe_log"
+  chmod 600 "$probe_log" 2>/dev/null || true
+
+  if is_ru; then
+    say "Active probing check: openssl s_client -connect ${PUBLIC_IP}:443 -servername ${DOMAIN}"
+  else
+    say "Active probing check: openssl s_client -connect ${PUBLIC_IP}:443 -servername ${DOMAIN}"
+  fi
+  {
+    printf '[openssl s_client]\n'
+    printf 'command=openssl s_client -connect %s:443 -servername %s -verify_hostname %s -brief\n' "$PUBLIC_IP" "$DOMAIN" "$DOMAIN"
+  } >> "$probe_log"
+  timeout 15 openssl s_client \
+    -connect "${PUBLIC_IP}:443" \
+    -servername "${DOMAIN}" \
+    -verify_hostname "${DOMAIN}" \
+    -verify_return_error \
+    -brief </dev/null >> "$probe_log" 2>&1 || {
+      cat "$probe_log" >&2 || true
+      if is_ru; then
+        die "Active probing openssl check failed. Проверьте DNS, сертификат, nginx stream и Telemt mask_host/mask_port."
+      else
+        die "Active probing openssl check failed. Check DNS, certificate, nginx stream, and Telemt mask_host/mask_port."
+      fi
+    }
+
+  if is_ru; then
+    say "Active probing check: curl -I --resolve ${DOMAIN}:443:${PUBLIC_IP} https://${DOMAIN}/"
+  else
+    say "Active probing check: curl -I --resolve ${DOMAIN}:443:${PUBLIC_IP} https://${DOMAIN}/"
+  fi
+  {
+    printf '\n[curl --resolve]\n'
+    printf 'command=curl -I --resolve %s:443:%s https://%s/\n' "$DOMAIN" "$PUBLIC_IP" "$DOMAIN"
+  } >> "$probe_log"
+  curl -fsSIL --resolve "${DOMAIN}:443:${PUBLIC_IP}" "https://${DOMAIN}/" >> "$probe_log" 2>&1 || {
+      cat "$probe_log" >&2 || true
+      if is_ru; then
+        die "Active probing curl check failed. Обычный HTTPS-запрос к домену через IP сервера не получил корректный ответ."
+      else
+        die "Active probing curl check failed. A normal HTTPS request to the domain through the server IP did not return a valid response."
+      fi
+    }
+  sed -n '1,24p' "$probe_log" || true
 }
 
 print_plan() {
@@ -1052,6 +1097,7 @@ print_plan() {
   high-load tuning:   $ENABLE_HIGH_LOAD_TUNING
 
 Установщик настроит:
+  - TLS-Fronting + TCP-Splitting схему для своего домена
   - nginx HTTP -> HTTPS redirect
   - nginx SNI stream на публичном 443/tcp
   - HTTPS mask site на 127.0.0.1:8443 ($MASK_SITE_MODE page)
@@ -1059,6 +1105,7 @@ print_plan() {
   - Telemt API на 127.0.0.1:9091
   - Telemt metrics на 127.0.0.1:9090
   - Let's Encrypt сертификат и certbot renewal timer
+  - финальную active probing проверку через openssl s_client и curl --resolve
   - опциональный Docker runtime hardening и healthcheck
 EOF
 
@@ -1117,6 +1164,7 @@ Install plan:
   high-load tuning:   $ENABLE_HIGH_LOAD_TUNING
 
 This installer will configure:
+  - TLS-Fronting + TCP-Splitting for your own domain
   - nginx HTTP -> HTTPS redirect
   - nginx SNI stream on public 443/tcp
   - HTTPS mask site on 127.0.0.1:8443 ($MASK_SITE_MODE page)
@@ -1124,6 +1172,7 @@ This installer will configure:
   - Telemt API on 127.0.0.1:9091
   - Telemt metrics on 127.0.0.1:9090
   - Let's Encrypt certificate and certbot renewal timer
+  - final active probing check with openssl s_client and curl --resolve
   - optional Docker runtime hardening and healthcheck
 EOF
 
@@ -1363,6 +1412,7 @@ $(cat /root/telemt-proxy-link.txt 2>/dev/null || true)
   секрет:       $SECRET_FILE
   сохраненный ввод: $SAVED_CONFIG
   ссылка:       /root/telemt-proxy-link.txt
+  active probe: /root/telemt-active-probing-check.txt
 
 Команды:
   cd $INSTALL_DIR
@@ -1383,6 +1433,7 @@ Files:
   secret:       $SECRET_FILE
   saved input:  $SAVED_CONFIG
   link:         /root/telemt-proxy-link.txt
+  active probe: /root/telemt-active-probing-check.txt
 
 Commands:
   cd $INSTALL_DIR
