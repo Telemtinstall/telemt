@@ -4,6 +4,8 @@ This directory builds a local Telemt Docker image from official upstream release
 
 The image is not published unless `PUSH=1` is explicitly set.
 
+Latest repository changes are tracked in [CHANGELOG.md](CHANGELOG.md).
+
 ## RU
 
 ### Быстрый выбор
