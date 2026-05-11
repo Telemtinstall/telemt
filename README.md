@@ -2,6 +2,22 @@
 
 This directory builds a local Telemt Docker image from official upstream release artifacts and includes a Docker-based Telemt server installer.
 
+## Installer Notice / Уведомление об установщике
+
+RU: Этот проект содержит обычный Bash-установщик и Dockerfile для упрощения установки Telemt с HTTPS-маскировкой. Это не официальный установщик Telemt. В репозитории нет встроенного бинарника Telemt, сертификатов, ключей или proxy-секретов. Сборка и установщик скачивают программное обеспечение из официальных источников:
+
+- Telemt: GitHub releases проекта `telemt/telemt`, `https://github.com/telemt/telemt`; Dockerfile скачивает release asset и проверяет upstream `.sha256`.
+- Docker / containerd / Docker Compose: пакеты дистрибутива или официальный Docker apt repository, `https://download.docker.com`.
+- nginx, certbot, openssl, jq, iproute2 и другие системные пакеты: официальные репозитории Debian/Ubuntu.
+- base images: `debian:12-slim` и `gcr.io/distroless/static-debian12:nonroot` из публичных registry.
+
+EN: This project contains an ordinary Bash installer and Dockerfile that make Telemt with HTTPS camouflage easier to install. It is not an official Telemt installer. This repository does not contain an embedded Telemt binary, certificates, keys, or proxy secrets. The build and installer download software from official sources:
+
+- Telemt: GitHub releases of `telemt/telemt`, `https://github.com/telemt/telemt`; the Dockerfile downloads the release asset and verifies the upstream `.sha256`.
+- Docker / containerd / Docker Compose: distribution packages or the official Docker apt repository, `https://download.docker.com`.
+- nginx, certbot, openssl, jq, iproute2, and other system packages: official Debian/Ubuntu repositories.
+- base images: `debian:12-slim` and `gcr.io/distroless/static-debian12:nonroot` from public registries.
+
 The image is not published unless `PUSH=1` is explicitly set.
 
 Latest repository changes are tracked in [CHANGELOG.md](CHANGELOG.md).
