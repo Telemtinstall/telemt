@@ -863,6 +863,7 @@ show_link = ["${TELEMT_USER}"]
 [general]
 fast_mode = true
 use_middle_proxy = ${middle_bool}
+config_strict = true
 log_level = "silent"
 EOF
     if [ -n "$AD_TAG" ]; then
@@ -898,6 +899,7 @@ enabled = true
 listen = "127.0.0.1:9091"
 read_only = true
 whitelist = ["127.0.0.1/32", "::1/128"]
+request_body_limit_bytes = 65536
 minimal_runtime_enabled = true
 minimal_runtime_cache_ttl_ms = 1000
 
