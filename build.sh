@@ -35,9 +35,9 @@ Usage:
 
 Examples:
   ./build.sh
-  TELEMT_VERSION=3.4.10 ./build.sh
-  TELEMT_VERSION=3.4.10 TARGET=debug ./build.sh
-  TELEMT_VERSION=3.4.10 IMAGE=ghcr.io/Telemtinstall/telemt PUSH=1 ./build.sh
+  TARGET=debug ./build.sh
+  TELEMT_VERSION=<release-tag> ./build.sh
+  IMAGE=ghcr.io/Telemtinstall/telemt PUSH=1 ./build.sh
 
 Variables:
   TELEMT_REPOSITORY  GitHub repo with releases. Default: telemt/telemt

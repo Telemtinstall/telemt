@@ -38,19 +38,19 @@ chmod +x ./build.sh
 Для production лучше указывать точный release tag:
 
 ```bash
-TELEMT_VERSION=3.4.10 ./build.sh
+TELEMT_VERSION=<version> ./build.sh
 ```
 
 Собрать debug image:
 
 ```bash
-TELEMT_VERSION=3.4.10 TARGET=debug ./build.sh
+TARGET=debug ./build.sh
 ```
 
 Проверить версию:
 
 ```bash
-docker run --rm --entrypoint /app/telemt telemt-local:3.4.10 --version
+docker run --rm --entrypoint /app/telemt telemt-local:latest --version
 ```
 
 ### Установка сервера
@@ -104,7 +104,7 @@ fi
 Если image находится в registry:
 
 ```bash
-TELEMT_IMAGE=ghcr.io/Telemtinstall/telemt:3.4.10 ./install_docker-telemt.sh
+TELEMT_IMAGE=ghcr.io/Telemtinstall/telemt:latest ./install_docker-telemt.sh
 ```
 
 Скрипт спросит:
@@ -152,7 +152,7 @@ Docker healthcheck
 По умолчанию публикации нет. Чтобы отправить image в registry, нужно явно включить `PUSH=1`:
 
 ```bash
-TELEMT_VERSION=3.4.10 IMAGE=ghcr.io/Telemtinstall/telemt PUSH=1 ./build.sh
+IMAGE=ghcr.io/Telemtinstall/telemt PUSH=1 ./build.sh
 ```
 
 Перед публикацией нужно быть залогиненным:
@@ -221,19 +221,19 @@ chmod +x ./build.sh
 For production, use an exact release tag:
 
 ```bash
-TELEMT_VERSION=3.4.10 ./build.sh
+TELEMT_VERSION=<version> ./build.sh
 ```
 
 Build the debug image:
 
 ```bash
-TELEMT_VERSION=3.4.10 TARGET=debug ./build.sh
+TARGET=debug ./build.sh
 ```
 
 Check version:
 
 ```bash
-docker run --rm --entrypoint /app/telemt telemt-local:3.4.10 --version
+docker run --rm --entrypoint /app/telemt telemt-local:latest --version
 ```
 
 ### Server Install
@@ -287,7 +287,7 @@ If `telemt-local:<tag>` is not built yet, the installer runs `build.sh` from the
 If the image is in a registry:
 
 ```bash
-TELEMT_IMAGE=ghcr.io/Telemtinstall/telemt:3.4.10 ./install_docker-telemt.sh
+TELEMT_IMAGE=ghcr.io/Telemtinstall/telemt:latest ./install_docker-telemt.sh
 ```
 
 The script asks:
@@ -335,7 +335,7 @@ When Docker hardening is disabled, the container runs in a simpler mode without 
 Publishing is disabled by default. To push an image to a registry, set `PUSH=1` explicitly:
 
 ```bash
-TELEMT_VERSION=3.4.10 IMAGE=ghcr.io/Telemtinstall/telemt PUSH=1 ./build.sh
+IMAGE=ghcr.io/Telemtinstall/telemt PUSH=1 ./build.sh
 ```
 
 Log in first:
