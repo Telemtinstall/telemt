@@ -25,6 +25,10 @@ ASSUME_YES="${ASSUME_YES:-0}"
 
 PUBLIC_IP=""
 SCRIPT_LANG_FROM_CLI="0"
+ACME_PREFLIGHT_TOKEN=""
+ACME_PREFLIGHT_EXPECTED=""
+ACME_PREFLIGHT_PATH=""
+ACME_PREFLIGHT_LOG="/root/telemt-acme-http01-check.txt"
 
 say() {
   printf '%s\n' "$*"
@@ -844,15 +848,228 @@ EOF
   systemctl reload nginx || systemctl restart nginx
 }
 
+append_acme_diagnostics() {
+  local log_file="$1"
+  local dns_a=""
+  local dns_aaaa=""
+
+  {
+    printf '\n[automatic ACME HTTP-01 diagnostics]\n'
+    printf 'domain=%s\n' "$DOMAIN"
+    printf 'server_public_ipv4=%s\n' "$PUBLIC_IP"
+    printf 'time=%s\n' "$(date -Is 2>/dev/null || date)"
+
+    printf '\n[dns]\n'
+    if have getent; then
+      dns_a="$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+      dns_aaaa="$(getent ahostsv6 "$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+      printf 'A/IPv4: %s\n' "${dns_a:-not found}"
+      printf 'AAAA/IPv6: %s\n' "${dns_aaaa:-not found}"
+      if [ -n "$dns_a" ] && ! printf ' %s ' "$dns_a" | grep -q " $PUBLIC_IP "; then
+        printf 'WARNING: domain IPv4 does not include this server public IPv4.\n'
+      fi
+      if [ -n "$dns_aaaa" ]; then
+        printf 'NOTE: domain has IPv6 records. If IPv6 is not configured and open on this server, remove AAAA or configure IPv6.\n'
+      fi
+    else
+      printf 'getent not found; DNS diagnostics skipped.\n'
+    fi
+
+    printf '\n[challenge file]\n'
+    printf 'webroot=/var/www/%s\n' "$DOMAIN"
+    printf 'challenge_path=%s\n' "${ACME_PREFLIGHT_PATH:-not set}"
+    if [ -n "$ACME_PREFLIGHT_PATH" ] && [ -f "$ACME_PREFLIGHT_PATH" ]; then
+      ls -l "$ACME_PREFLIGHT_PATH" 2>&1 || true
+      printf 'expected_content=%s\n' "$ACME_PREFLIGHT_EXPECTED"
+      printf 'actual_content='
+      sed -n '1p' "$ACME_PREFLIGHT_PATH" 2>/dev/null || true
+    else
+      printf 'challenge file missing\n'
+    fi
+
+    printf '\n[local HTTP check]\n'
+    if [ -n "$ACME_PREFLIGHT_TOKEN" ]; then
+      printf 'url=http://127.0.0.1/.well-known/acme-challenge/%s host=%s\n' "$ACME_PREFLIGHT_TOKEN" "$DOMAIN"
+      curl -4fsSIL --connect-timeout 5 --max-time 10 -H "Host: ${DOMAIN}" \
+        "http://127.0.0.1/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}" 2>&1 || true
+      curl -4fsS --connect-timeout 5 --max-time 10 -H "Host: ${DOMAIN}" \
+        "http://127.0.0.1/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}" 2>&1 || true
+      printf '\n'
+    else
+      printf 'challenge token is not set\n'
+    fi
+
+    printf '\n[public IPv4 HTTP check]\n'
+    if [ -n "$ACME_PREFLIGHT_TOKEN" ]; then
+      printf 'url=http://%s/.well-known/acme-challenge/%s resolved_to=%s\n' "$DOMAIN" "$ACME_PREFLIGHT_TOKEN" "$PUBLIC_IP"
+      curl -4fsSIL --connect-timeout 8 --max-time 20 --resolve "${DOMAIN}:80:${PUBLIC_IP}" \
+        "http://${DOMAIN}/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}" 2>&1 || true
+      curl -4fsS --connect-timeout 8 --max-time 20 --resolve "${DOMAIN}:80:${PUBLIC_IP}" \
+        "http://${DOMAIN}/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}" 2>&1 || true
+      printf '\n'
+    else
+      printf 'challenge token is not set\n'
+    fi
+
+    printf '\n[listening ports]\n'
+    ss -lntp 2>&1 | grep -E ':(80|443)\b' || printf 'No 80/443 listeners found by ss.\n'
+
+    printf '\n[nginx]\n'
+    if have systemctl; then
+      systemctl is-active nginx 2>/dev/null | sed 's/^/nginx_active=/' || true
+    fi
+    nginx -t 2>&1 || true
+    if [ -f "/etc/nginx/sites-available/${DOMAIN}" ]; then
+      printf 'site_config=/etc/nginx/sites-available/%s\n' "$DOMAIN"
+      grep -nE 'listen 80|server_name|well-known|root|return 301' "/etc/nginx/sites-available/${DOMAIN}" 2>/dev/null || true
+    else
+      printf 'site_config=/etc/nginx/sites-available/%s missing\n' "$DOMAIN"
+    fi
+
+    printf '\n[firewall]\n'
+    if have ufw; then
+      ufw status verbose 2>&1 || true
+    else
+      printf 'ufw not installed\n'
+    fi
+    if have firewall-cmd; then
+      firewall-cmd --state 2>&1 || true
+      firewall-cmd --list-all 2>&1 || true
+    else
+      printf 'firewalld not installed\n'
+    fi
+    if have nft; then
+      printf '\n[nftables first 160 lines]\n'
+      nft list ruleset 2>&1 | sed -n '1,160p' || true
+    fi
+    if have iptables; then
+      printf '\n[iptables first 120 lines]\n'
+      iptables -S 2>&1 | sed -n '1,120p' || true
+    fi
+  } >> "$log_file"
+}
+
+acme_http01_failed() {
+  local log_file="$1"
+  local failed_check="$2"
+
+  append_acme_diagnostics "$log_file"
+  cat "$log_file" >&2 || true
+
+  if is_ru; then
+    cat >&2 <<EOF
+
+Let's Encrypt HTTP-01 check failed: ${failed_check}
+
+Что это значит:
+  Центр сертификации должен скачать файл:
+  http://${DOMAIN}/.well-known/acme-challenge/<token>
+
+  Если файл не скачивается снаружи, сертификат не выпускается. Обычно причина одна из этих:
+  1. DNS A-запись домена не указывает на IPv4 этого сервера: ${PUBLIC_IP}
+  2. Входящий 80/tcp закрыт в firewall сервера или в панели хостера.
+  3. У домена есть AAAA/IPv6, но IPv6 на сервере не настроен или закрыт.
+  4. Перед сервером включен CDN/proxy, который не пропускает /.well-known/acme-challenge/.
+  5. nginx не отдает webroot /var/www/${DOMAIN} для этого домена.
+
+Что сделать:
+  1. Проверьте DNS A-запись и при необходимости подождите обновления DNS.
+  2. Откройте входящий TCP 80 в панели хостера/security group и в firewall ОС.
+  3. Если IPv6 не используете, удалите AAAA-запись домена.
+  4. Если используете Cloudflare/CDN, временно включите DNS only или пропустите challenge path.
+  5. Полный лог диагностики сохранен тут: ${log_file}
+EOF
+    die "Let's Encrypt HTTP-01 challenge is not reachable."
+  fi
+
+  cat >&2 <<EOF
+
+Let's Encrypt HTTP-01 check failed: ${failed_check}
+
+Meaning:
+  The Certificate Authority must download:
+  http://${DOMAIN}/.well-known/acme-challenge/<token>
+
+  If that file is unreachable from the internet, certificate issuance fails. Common causes:
+  1. The domain A record does not point to this server IPv4: ${PUBLIC_IP}
+  2. Inbound TCP 80 is blocked by the server firewall or provider firewall.
+  3. The domain has AAAA/IPv6 records, but IPv6 is not configured or open.
+  4. A CDN/proxy in front of the server does not pass /.well-known/acme-challenge/.
+  5. nginx is not serving webroot /var/www/${DOMAIN} for this domain.
+
+What to do:
+  1. Check the DNS A record and wait for DNS propagation if needed.
+  2. Allow inbound TCP 80 in the provider panel/security group and OS firewall.
+  3. Remove the AAAA record if you do not use IPv6.
+  4. If you use Cloudflare/CDN, temporarily switch to DNS only or pass the challenge path.
+  5. Full diagnostics log: ${log_file}
+EOF
+  die "Let's Encrypt HTTP-01 challenge is not reachable."
+}
+
+verify_acme_http01_webroot() {
+  local local_body=""
+  local public_body=""
+  local rc=0
+
+  ACME_PREFLIGHT_TOKEN="telemt-$(openssl rand -hex 12)"
+  ACME_PREFLIGHT_EXPECTED="telemt-acme-ok-$(openssl rand -hex 16)"
+  ACME_PREFLIGHT_PATH="/var/www/${DOMAIN}/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}"
+
+  install -d -m 0755 "/var/www/${DOMAIN}/.well-known/acme-challenge"
+  printf '%s\n' "$ACME_PREFLIGHT_EXPECTED" > "$ACME_PREFLIGHT_PATH"
+  chmod 0644 "$ACME_PREFLIGHT_PATH"
+
+  : > "$ACME_PREFLIGHT_LOG"
+  chmod 600 "$ACME_PREFLIGHT_LOG" 2>/dev/null || true
+  {
+    printf '[ACME HTTP-01 preflight]\n'
+    printf 'domain=%s\n' "$DOMAIN"
+    printf 'server_public_ipv4=%s\n' "$PUBLIC_IP"
+    printf 'challenge_path=%s\n' "$ACME_PREFLIGHT_PATH"
+  } >> "$ACME_PREFLIGHT_LOG"
+
+  if is_ru; then
+    say "Проверка HTTP-01 webroot локально: http://127.0.0.1/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}"
+  else
+    say "Checking HTTP-01 webroot locally: http://127.0.0.1/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}"
+  fi
+
+  local_body="$(curl -4fsS --connect-timeout 5 --max-time 10 -H "Host: ${DOMAIN}" \
+    "http://127.0.0.1/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}" 2>>"$ACME_PREFLIGHT_LOG")" || rc=$?
+  if [ "$rc" -ne 0 ] || [ "$local_body" != "$ACME_PREFLIGHT_EXPECTED" ]; then
+    acme_http01_failed "$ACME_PREFLIGHT_LOG" "local nginx webroot check on 127.0.0.1:80"
+  fi
+
+  if is_ru; then
+    say "Проверка HTTP-01 через публичный IPv4: curl -4 --resolve ${DOMAIN}:80:${PUBLIC_IP}"
+  else
+    say "Checking HTTP-01 through public IPv4: curl -4 --resolve ${DOMAIN}:80:${PUBLIC_IP}"
+  fi
+
+  rc=0
+  public_body="$(curl -4fsS --connect-timeout 8 --max-time 20 --resolve "${DOMAIN}:80:${PUBLIC_IP}" \
+    "http://${DOMAIN}/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}" 2>>"$ACME_PREFLIGHT_LOG")" || rc=$?
+  if [ "$rc" -ne 0 ] || [ "$public_body" != "$ACME_PREFLIGHT_EXPECTED" ]; then
+    acme_http01_failed "$ACME_PREFLIGHT_LOG" "public IPv4 webroot check on ${PUBLIC_IP}:80"
+  fi
+}
+
 issue_certificate() {
-  certbot certonly \
-    --webroot \
-    -w "/var/www/$DOMAIN" \
-    -d "$DOMAIN" \
-    --non-interactive \
-    --agree-tos \
-    --email "$EMAIL" \
-    --keep-until-expiring
+  local certbot_log="/root/telemt-certbot-check.txt"
+  : > "$certbot_log"
+  chmod 600 "$certbot_log" 2>/dev/null || true
+
+  if ! certbot certonly \
+      --webroot \
+      -w "/var/www/$DOMAIN" \
+      -d "$DOMAIN" \
+      --non-interactive \
+      --agree-tos \
+      --email "$EMAIL" \
+      --keep-until-expiring 2>&1 | tee -a "$certbot_log"; then
+    acme_http01_failed "$certbot_log" "certbot HTTP-01 challenge"
+  fi
   systemctl enable --now certbot.timer 2>/dev/null || true
 }
 
@@ -1341,6 +1558,7 @@ print_plan() {
   - Telemt API на 127.0.0.1:9091
   - Telemt metrics на 127.0.0.1:9090
   - Let's Encrypt сертификат и certbot renewal timer
+  - HTTP-01 preflight перед certbot: проверка challenge-файла локально и через публичный IPv4
   - финальную active probing проверку через openssl s_client и curl --resolve
   - опциональный Docker runtime hardening и healthcheck
 EOF
@@ -1409,6 +1627,7 @@ This installer will configure:
   - Telemt API on 127.0.0.1:9091
   - Telemt metrics on 127.0.0.1:9090
   - Let's Encrypt certificate and certbot renewal timer
+  - HTTP-01 preflight before certbot: challenge-file check locally and through the public IPv4
   - final active probing check with openssl s_client and curl --resolve
   - optional Docker runtime hardening and healthcheck
 EOF
@@ -1613,6 +1832,8 @@ main() {
   else
     is_ru && say "[05] nginx HTTP и сертификат" || say "[05] nginx HTTP and certificate"
     write_mask_site_http_only
+    write_firewall_hints
+    verify_acme_http01_webroot
     issue_certificate
     mark_done cert
   fi

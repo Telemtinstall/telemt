@@ -134,6 +134,8 @@ docker run --rm --entrypoint /app/telemt telemt-local:latest --version
 
 Перед запуском нужен чистый Debian/Ubuntu сервер, A-запись домена на IPv4 сервера и свободные `80/tcp`, `443/tcp`.
 
+На этапе сертификата установщик сначала проверяет HTTP-01 challenge без участия Let's Encrypt: создает временный файл в `/var/www/<domain>/.well-known/acme-challenge/`, проверяет его локально через nginx и затем через публичный IPv4 командой `curl -4 --resolve <domain>:80:<server_ipv4>`. Если файл не отдается, скрипт останавливается до `certbot` и пишет диагностику в `/root/telemt-acme-http01-check.txt`: DNS A/AAAA, слушающие порты, `nginx -t`, site config и firewall. Это помогает сразу увидеть закрытый `80/tcp`, неправильную A-запись, лишнюю AAAA-запись или CDN/proxy, который не пропускает `/.well-known/acme-challenge/`.
+
 Обычный запуск:
 
 ```bash
@@ -369,6 +371,8 @@ docker run --rm --entrypoint /app/telemt telemt-local:latest --version
 In this architecture, a normal scanner or browser without the MTProxy key receives the HTTPS mask site with a real certificate for your domain. Telemt does not replace TLS and does not perform MITM: valid MTProxy clients stay inside Telemt, while other TLS connections are relayed to the mask site as a TCP stream.
 
 Before running, use a clean Debian/Ubuntu server, create a DNS A record pointing to the server IPv4, and keep `80/tcp` and `443/tcp` free.
+
+During the certificate step, the installer first checks the HTTP-01 challenge without involving Let's Encrypt: it creates a temporary file under `/var/www/<domain>/.well-known/acme-challenge/`, checks it locally through nginx, and then checks it through the public IPv4 with `curl -4 --resolve <domain>:80:<server_ipv4>`. If the file is not reachable, the script stops before `certbot` and writes diagnostics to `/root/telemt-acme-http01-check.txt`: DNS A/AAAA, listening ports, `nginx -t`, site config, and firewall state. This usually points directly to a closed `80/tcp`, a wrong A record, an unwanted AAAA record, or a CDN/proxy that does not pass `/.well-known/acme-challenge/`.
 
 Normal run:
 
