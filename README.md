@@ -144,11 +144,12 @@ Enable high-load tuning for many clients
 В конце установки скрипт выполняет active probing проверку на вашем домене:
 
 ```bash
-openssl s_client -connect <server_ipv4>:443 -servername <domain>
-curl -I --resolve <domain>:443:<server_ipv4> https://<domain>/
+openssl s_client -4 -connect <server_ipv4>:443 -servername <domain>
+openssl s_client -4 -connect <domain>:443 -servername <domain>
+curl -4 -I --resolve <domain>:443:<server_ipv4> https://<domain>/
 ```
 
-Результат сохраняется в `/root/telemt-active-probing-check.txt`. Если обычный HTTPS-запрос через IP сервера не получает корректный ответ, установка останавливается с ошибкой, потому что маскировочный слой работает неправильно.
+Результат сохраняется в `/root/telemt-active-probing-check.txt`. Если обычный HTTPS-запрос через IP сервера не получает корректный ответ, установка останавливается с ошибкой, потому что маскировочный слой работает неправильно. При ошибке скрипт сам печатает диагностику: DNS A/AAAA, слушающие порты, `nginx -t`, наличие stream-конфига, `docker ps`, последние логи Telemt и состояние firewall. Если в выводе есть `BIO_connect:connect error`, чаще всего `443/tcp` закрыт firewall-ом/панелью хостера или nginx stream не слушает публичный `443`.
 
 По умолчанию используется красивая заглушка. Если выбрать `empty`, nginx будет отдавать пустой `index.html` с `200 OK`, без видимого текста. Логи доступа выключены. Docker hardening включен по умолчанию, но его можно отключить. High-load tuning выключен и применяется только после отдельного подтверждения.
 
@@ -327,11 +328,12 @@ Enable high-load tuning for many clients
 At the end of the install, the script runs an active probing check against your own domain:
 
 ```bash
-openssl s_client -connect <server_ipv4>:443 -servername <domain>
-curl -I --resolve <domain>:443:<server_ipv4> https://<domain>/
+openssl s_client -4 -connect <server_ipv4>:443 -servername <domain>
+openssl s_client -4 -connect <domain>:443 -servername <domain>
+curl -4 -I --resolve <domain>:443:<server_ipv4> https://<domain>/
 ```
 
-The result is saved to `/root/telemt-active-probing-check.txt`. If a normal HTTPS request through the server IP does not return a valid response, the installer stops with an error because the masking layer is not working correctly.
+The result is saved to `/root/telemt-active-probing-check.txt`. If a normal HTTPS request through the server IP does not return a valid response, the installer stops with an error because the masking layer is not working correctly. On failure, the script prints diagnostics automatically: DNS A/AAAA, listening ports, `nginx -t`, stream config presence, `docker ps`, recent Telemt logs, and firewall state. If the output contains `BIO_connect:connect error`, TCP `443` is usually blocked by the server/provider firewall or nginx stream is not listening on the public `443`.
 
 The playful placeholder is used by default. If `empty` is selected, nginx serves an empty `index.html` with `200 OK` and no visible text. Access logs are disabled by default. Docker hardening is enabled by default, but can be disabled. High-load tuning is disabled and is applied only after explicit confirmation.
 

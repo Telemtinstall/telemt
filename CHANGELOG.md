@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-05-19
+
+### Changed
+
+- Improved the final active probing check in the Docker installer:
+  - forces IPv4 with `openssl s_client -4` and `curl -4`;
+  - stores the full result in `/root/telemt-active-probing-check.txt`;
+  - prints automatic diagnostics on failure: DNS A/AAAA, listening ports, nginx status/test, stream config, Docker container/logs, and firewall state;
+  - redacts proxy links/secrets from diagnostic Docker logs;
+  - explains common `BIO_connect:connect error` causes and the exact next steps.
+
 ## 2026-05-11
 
 ### Added

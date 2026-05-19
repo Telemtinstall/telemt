@@ -1024,6 +1024,194 @@ write_firewall_hints() {
   fi
 }
 
+openssl_supports_ipv4_flag() {
+  openssl s_client -help 2>&1 | grep -q -- '-4'
+}
+
+log_command() {
+  local log_file="$1"
+  shift
+  {
+    printf 'command='
+    printf '%q ' "$@"
+    printf '\n'
+  } >> "$log_file"
+}
+
+run_openssl_probe() {
+  local log_file="$1"
+  local label="$2"
+  local connect_to="$3"
+  local optional="${4:-no}"
+  local rc=0
+  local ipv4_flag=()
+
+  if openssl_supports_ipv4_flag; then
+    ipv4_flag=(-4)
+  fi
+
+  {
+    printf '\n[%s]\n' "$label"
+    log_command "$log_file" timeout 15 openssl s_client "${ipv4_flag[@]}" -connect "$connect_to" -servername "$DOMAIN" -verify_hostname "$DOMAIN" -verify_return_error -brief
+  } >> "$log_file"
+
+  timeout 15 openssl s_client \
+    "${ipv4_flag[@]}" \
+    -connect "$connect_to" \
+    -servername "$DOMAIN" \
+    -verify_hostname "$DOMAIN" \
+    -verify_return_error \
+    -brief </dev/null >> "$log_file" 2>&1 || rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    printf 'result=OK\n' >> "$log_file"
+    return 0
+  fi
+
+  printf 'result=FAILED exit_code=%s optional=%s\n' "$rc" "$optional" >> "$log_file"
+  [ "$optional" = "yes" ] && return 0
+  return "$rc"
+}
+
+run_curl_probe() {
+  local log_file="$1"
+  local rc=0
+
+  {
+    printf '\n[curl IPv4 active probing]\n'
+    log_command "$log_file" curl -4fsSIL --connect-timeout 8 --max-time 20 --resolve "${DOMAIN}:443:${PUBLIC_IP}" "https://${DOMAIN}/"
+  } >> "$log_file"
+
+  curl -4fsSIL \
+    --connect-timeout 8 \
+    --max-time 20 \
+    --resolve "${DOMAIN}:443:${PUBLIC_IP}" \
+    "https://${DOMAIN}/" >> "$log_file" 2>&1 || rc=$?
+
+  if [ "$rc" -eq 0 ]; then
+    printf 'result=OK\n' >> "$log_file"
+    return 0
+  fi
+
+  printf 'result=FAILED exit_code=%s\n' "$rc" >> "$log_file"
+  return "$rc"
+}
+
+append_active_probe_diagnostics() {
+  local log_file="$1"
+  local dns_a=""
+  local dns_aaaa=""
+
+  {
+    printf '\n[automatic diagnostics]\n'
+    printf 'domain=%s\n' "$DOMAIN"
+    printf 'server_public_ipv4=%s\n' "$PUBLIC_IP"
+    printf 'time=%s\n' "$(date -Is 2>/dev/null || date)"
+
+    printf '\n[dns]\n'
+    if have getent; then
+      dns_a="$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+      dns_aaaa="$(getent ahostsv6 "$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+      printf 'A/IPv4: %s\n' "${dns_a:-not found}"
+      printf 'AAAA/IPv6: %s\n' "${dns_aaaa:-not found}"
+      if [ -n "$dns_a" ] && ! printf ' %s ' "$dns_a" | grep -q " $PUBLIC_IP "; then
+        printf 'WARNING: domain IPv4 does not include this server public IPv4.\n'
+      fi
+      if [ -n "$dns_aaaa" ]; then
+        printf 'NOTE: domain has IPv6 records. If IPv6 is not configured and open on this server, clients may fail unless they use IPv4.\n'
+      fi
+    else
+      printf 'getent not found; DNS diagnostics skipped.\n'
+    fi
+
+    printf '\n[listening ports]\n'
+    ss -lntp 2>&1 | grep -E ':(80|443|8443|1443|9090|9091)\b' || printf 'No expected listeners found by ss.\n'
+
+    printf '\n[nginx]\n'
+    if have systemctl; then
+      systemctl is-active nginx 2>/dev/null | sed 's/^/nginx_active=/' || true
+    fi
+    nginx -t 2>&1 || true
+    if [ -f /etc/nginx/modules-enabled/60-telemt-stream-sni.conf ]; then
+      printf 'stream_config=/etc/nginx/modules-enabled/60-telemt-stream-sni.conf exists\n'
+      grep -nE 'stream|ssl_preread|listen 443|127\.0\.0\.1:(1443|8443)' /etc/nginx/modules-enabled/60-telemt-stream-sni.conf 2>/dev/null || true
+    else
+      printf 'stream_config=/etc/nginx/modules-enabled/60-telemt-stream-sni.conf missing\n'
+    fi
+
+    printf '\n[docker]\n'
+    if have docker; then
+      docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>&1 || true
+      docker logs telemt --tail 80 2>&1 | sed -E \
+        -e 's#tg://proxy[^[:space:]]+#tg://proxy<redacted>#g' \
+        -e 's#secret[=:][0-9A-Fa-f]{32,}#secret=<redacted>#g' || true
+    else
+      printf 'docker command not found\n'
+    fi
+
+    printf '\n[firewall]\n'
+    if have ufw; then
+      ufw status verbose 2>&1 || true
+    else
+      printf 'ufw not installed\n'
+    fi
+    if have firewall-cmd; then
+      firewall-cmd --state 2>&1 || true
+      firewall-cmd --list-all 2>&1 || true
+    else
+      printf 'firewalld not installed\n'
+    fi
+  } >> "$log_file"
+}
+
+active_probe_failed() {
+  local log_file="$1"
+  local failed_check="$2"
+
+  append_active_probe_diagnostics "$log_file"
+  cat "$log_file" >&2 || true
+
+  if is_ru; then
+    cat >&2 <<EOF
+
+Active probing check failed: ${failed_check}
+
+Что это значит:
+  Проверка не смогла получить нормальный TLS/HTTPS ответ на ${DOMAIN}:443.
+  Если выше есть "BIO_connect:connect error", это почти всегда значит, что TCP 443 не открылся:
+  порт закрыт firewall-ом/панелью хостера, nginx не слушает 443 или stream-конфиг не применился.
+
+Что сделать:
+  1. Откройте входящие TCP-порты 80 и 443 в firewall сервера и в панели хостера.
+  2. Проверьте, что DNS A-запись домена указывает на этот IPv4: ${PUBLIC_IP}.
+  3. Если у домена есть AAAA/IPv6, либо настройте IPv6 и listen [::]:443, либо удалите AAAA-запись.
+  4. Проверьте nginx stream: должен быть ssl_preread на 443 и маршруты 127.0.0.1:1443 / 127.0.0.1:8443.
+  5. Проверьте, что контейнер telemt запущен и слушает 127.0.0.1:1443, а API доступен на 127.0.0.1:9091.
+  6. Полный лог диагностики сохранен тут: ${log_file}
+EOF
+    die "Active probing failed. See diagnostics above."
+  fi
+
+  cat >&2 <<EOF
+
+Active probing check failed: ${failed_check}
+
+Meaning:
+  The installer could not get a valid TLS/HTTPS response from ${DOMAIN}:443.
+  If the log above contains "BIO_connect:connect error", TCP 443 usually did not open:
+  firewall/provider filtering, nginx is not listening on 443, or nginx stream was not applied.
+
+What to do:
+  1. Allow inbound TCP ports 80 and 443 in the server firewall and provider firewall.
+  2. Make sure the domain A record points to this IPv4: ${PUBLIC_IP}.
+  3. If the domain has AAAA/IPv6 records, configure IPv6 and listen [::]:443, or remove the AAAA record.
+  4. Check nginx stream: ssl_preread must listen on 443 and route to 127.0.0.1:1443 / 127.0.0.1:8443.
+  5. Check that the telemt container is running, 127.0.0.1:1443 is listening, and API is reachable on 127.0.0.1:9091.
+  6. Full diagnostics log: ${log_file}
+EOF
+  die "Active probing failed. See diagnostics above."
+}
+
 validate_install() {
   sleep 8
   ss -lntp | grep -E ':(80|443|8443|1443|9090|9091)\b' || true
@@ -1037,45 +1225,22 @@ validate_install() {
   chmod 600 "$probe_log" 2>/dev/null || true
 
   if is_ru; then
-    say "Active probing check: openssl s_client -connect ${PUBLIC_IP}:443 -servername ${DOMAIN}"
+    say "Active probing check: openssl s_client -4 -connect ${PUBLIC_IP}:443 -servername ${DOMAIN}"
   else
-    say "Active probing check: openssl s_client -connect ${PUBLIC_IP}:443 -servername ${DOMAIN}"
+    say "Active probing check: openssl s_client -4 -connect ${PUBLIC_IP}:443 -servername ${DOMAIN}"
   fi
-  {
-    printf '[openssl s_client]\n'
-    printf 'command=openssl s_client -connect %s:443 -servername %s -verify_hostname %s -brief\n' "$PUBLIC_IP" "$DOMAIN" "$DOMAIN"
-  } >> "$probe_log"
-  timeout 15 openssl s_client \
-    -connect "${PUBLIC_IP}:443" \
-    -servername "${DOMAIN}" \
-    -verify_hostname "${DOMAIN}" \
-    -verify_return_error \
-    -brief </dev/null >> "$probe_log" 2>&1 || {
-      cat "$probe_log" >&2 || true
-      if is_ru; then
-        die "Active probing openssl check failed. Проверьте DNS, сертификат, nginx stream и Telemt mask_host/mask_port."
-      else
-        die "Active probing openssl check failed. Check DNS, certificate, nginx stream, and Telemt mask_host/mask_port."
-      fi
-    }
+  run_openssl_probe "$probe_log" "openssl IPv4 via server public IP" "${PUBLIC_IP}:443" "no" || \
+    active_probe_failed "$probe_log" "openssl IPv4 connection to ${PUBLIC_IP}:443"
+
+  run_openssl_probe "$probe_log" "openssl IPv4 via domain DNS" "${DOMAIN}:443" "yes"
 
   if is_ru; then
-    say "Active probing check: curl -I --resolve ${DOMAIN}:443:${PUBLIC_IP} https://${DOMAIN}/"
+    say "Active probing check: curl -4 -I --resolve ${DOMAIN}:443:${PUBLIC_IP} https://${DOMAIN}/"
   else
-    say "Active probing check: curl -I --resolve ${DOMAIN}:443:${PUBLIC_IP} https://${DOMAIN}/"
+    say "Active probing check: curl -4 -I --resolve ${DOMAIN}:443:${PUBLIC_IP} https://${DOMAIN}/"
   fi
-  {
-    printf '\n[curl --resolve]\n'
-    printf 'command=curl -I --resolve %s:443:%s https://%s/\n' "$DOMAIN" "$PUBLIC_IP" "$DOMAIN"
-  } >> "$probe_log"
-  curl -fsSIL --resolve "${DOMAIN}:443:${PUBLIC_IP}" "https://${DOMAIN}/" >> "$probe_log" 2>&1 || {
-      cat "$probe_log" >&2 || true
-      if is_ru; then
-        die "Active probing curl check failed. Обычный HTTPS-запрос к домену через IP сервера не получил корректный ответ."
-      else
-        die "Active probing curl check failed. A normal HTTPS request to the domain through the server IP did not return a valid response."
-      fi
-    }
+  run_curl_probe "$probe_log" || \
+    active_probe_failed "$probe_log" "curl IPv4 HTTPS request through ${PUBLIC_IP}:443"
   sed -n '1,24p' "$probe_log" || true
 }
 
