@@ -151,7 +151,7 @@ curl -4 -I --resolve <domain>:443:<server_ipv4> https://<domain>/
 
 Результат сохраняется в `/root/telemt-active-probing-check.txt`. Если обычный HTTPS-запрос через IP сервера не получает корректный ответ, установка останавливается с ошибкой, потому что маскировочный слой работает неправильно. При ошибке скрипт сам печатает диагностику: DNS A/AAAA, слушающие порты, `nginx -t`, наличие stream-конфига, `docker ps`, последние логи Telemt и состояние firewall. Если в выводе есть `BIO_connect:connect error`, чаще всего `443/tcp` закрыт firewall-ом/панелью хостера или nginx stream не слушает публичный `443`.
 
-По умолчанию используется красивая заглушка. Если выбрать `empty`, nginx будет отдавать пустой `index.html` с `200 OK`, без видимого текста. Логи доступа выключены. Docker hardening включен по умолчанию, но его можно отключить. High-load tuning выключен и применяется только после отдельного подтверждения.
+По умолчанию используется красивая заглушка. Если выбрать `empty`, nginx будет отдавать пустой `index.html` с `200 OK`, без видимого текста. Логи доступа выключены. Docker hardening включен по умолчанию, но его можно отключить. High-load tuning выключен и применяется только после отдельного подтверждения. Дефолтный лимит Telemt поднят до `5000` подключений.
 
 Если Docker hardening включен, compose добавляет:
 
@@ -160,9 +160,10 @@ read_only root filesystem
 cap_drop: ALL
 no-new-privileges
 tmpfs for /tmp
-pids/memory/cpu limits
 Docker healthcheck
 ```
+
+CPU/RAM/PID лимиты в compose не задаются. Это сделано специально, чтобы Telemt не упирался в искусственные ограничения при большом числе клиентов и загрузке медиа.
 
 Если Docker hardening отключен, контейнер запускается проще: без `read_only`, `cap_drop`, `no-new-privileges`, `tmpfs` и без compose healthcheck.
 
@@ -335,7 +336,7 @@ curl -4 -I --resolve <domain>:443:<server_ipv4> https://<domain>/
 
 The result is saved to `/root/telemt-active-probing-check.txt`. If a normal HTTPS request through the server IP does not return a valid response, the installer stops with an error because the masking layer is not working correctly. On failure, the script prints diagnostics automatically: DNS A/AAAA, listening ports, `nginx -t`, stream config presence, `docker ps`, recent Telemt logs, and firewall state. If the output contains `BIO_connect:connect error`, TCP `443` is usually blocked by the server/provider firewall or nginx stream is not listening on the public `443`.
 
-The playful placeholder is used by default. If `empty` is selected, nginx serves an empty `index.html` with `200 OK` and no visible text. Access logs are disabled by default. Docker hardening is enabled by default, but can be disabled. High-load tuning is disabled and is applied only after explicit confirmation.
+The playful placeholder is used by default. If `empty` is selected, nginx serves an empty `index.html` with `200 OK` and no visible text. Access logs are disabled by default. Docker hardening is enabled by default, but can be disabled. High-load tuning is disabled and is applied only after explicit confirmation. The default Telemt connection limit is now `5000`.
 
 When Docker hardening is enabled, compose adds:
 
@@ -344,9 +345,10 @@ read_only root filesystem
 cap_drop: ALL
 no-new-privileges
 tmpfs for /tmp
-pids/memory/cpu limits
 Docker healthcheck
 ```
+
+Compose does not set CPU/RAM/PID limits. This is intentional, so Telemt does not hit artificial limits when many clients load media.
 
 When Docker hardening is disabled, the container runs in a simpler mode without `read_only`, `cap_drop`, `no-new-privileges`, `tmpfs`, and compose healthcheck.
 

@@ -12,7 +12,7 @@ EMAIL="${EMAIL:-}"
 TELEMT_IMAGE="${TELEMT_IMAGE:-telemt-local:latest}"
 TELEMT_VERSION="${TELEMT_VERSION:-latest}"
 TELEMT_USER="${TELEMT_USER:-default}"
-TELEMT_MAX_TCP_CONNS="${TELEMT_MAX_TCP_CONNS:-1000}"
+TELEMT_MAX_TCP_CONNS="${TELEMT_MAX_TCP_CONNS:-5000}"
 AD_TAG="${AD_TAG:-}"
 USE_MIDDLE_PROXY="${USE_MIDDLE_PROXY:-}"
 ENABLE_LOGS="${ENABLE_LOGS:-no}"
@@ -975,10 +975,7 @@ write_compose() {
       - ALL
     read_only: true
     tmpfs:
-      - /tmp:rw,nosuid,nodev,noexec,size=16m
-    pids_limit: 256
-    mem_limit: 256m
-    cpus: "0.50"'
+      - /tmp:rw,nosuid,nodev,noexec,size=16m'
   else
     hardening_block='
     healthcheck:
@@ -1284,8 +1281,9 @@ Docker hardening включит:
   - cap_drop: ALL
   - no-new-privileges
   - tmpfs для /tmp
-  - pids/memory/cpu limits
   - Docker healthcheck
+
+CPU/RAM/PID лимиты не задаются: контейнер не будет искусственно ограничен при загрузке медиа.
 EOF
     else
       cat <<'EOF'
@@ -1351,8 +1349,9 @@ Docker hardening will enable:
   - cap_drop: ALL
   - no-new-privileges
   - tmpfs for /tmp
-  - pids/memory/cpu limits
   - Docker healthcheck
+
+CPU/RAM/PID limits are not set: the container is not artificially throttled while loading media.
 EOF
   else
     cat <<'EOF'

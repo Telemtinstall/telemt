@@ -10,6 +10,8 @@
   - prints automatic diagnostics on failure: DNS A/AAAA, listening ports, nginx status/test, stream config, Docker container/logs, and firewall state;
   - redacts proxy links/secrets from diagnostic Docker logs;
   - explains common `BIO_connect:connect error` causes and the exact next steps.
+- Raised the default Telemt connection limit from `1000` to `5000`.
+- Removed default Docker CPU/RAM/PID limits from generated compose files. Hardening still keeps `read_only`, `cap_drop`, `no-new-privileges`, `tmpfs`, healthcheck, and high `nofile` ulimits.
 
 ## 2026-05-11
 

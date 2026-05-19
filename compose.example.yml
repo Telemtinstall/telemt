@@ -22,9 +22,6 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=16m
-    pids_limit: 256
-    mem_limit: 256m
-    cpus: "0.50"
     logging:
       driver: "none"
     ulimits:
