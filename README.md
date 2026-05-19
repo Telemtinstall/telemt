@@ -48,6 +48,48 @@ compose.example.yml       Пример hardened compose для ручной ин
 
 ### Локальная сборка
 
+Скачать репозиторий через Git и запустить установщик:
+
+```bash
+apt update
+apt install -y git ca-certificates
+cd /root
+git clone https://github.com/Telemtinstall/telemt.git docker-telemt
+cd /root/docker-telemt
+chmod +x ./build.sh ./install_docker-telemt.sh
+./install_docker-telemt.sh -lang ru
+```
+
+Скачать только нужные файлы через `wget`:
+
+```bash
+apt update
+apt install -y ca-certificates wget
+mkdir -p /root/docker-telemt
+cd /root/docker-telemt
+wget -O Dockerfile https://raw.githubusercontent.com/Telemtinstall/telemt/main/Dockerfile
+wget -O build.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/build.sh
+wget -O install_docker-telemt.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/install_docker-telemt.sh
+chmod +x ./build.sh ./install_docker-telemt.sh
+./install_docker-telemt.sh -lang ru
+```
+
+Скачать только нужные файлы через `curl`:
+
+```bash
+apt update
+apt install -y ca-certificates curl
+mkdir -p /root/docker-telemt
+cd /root/docker-telemt
+curl -fsSLo Dockerfile https://raw.githubusercontent.com/Telemtinstall/telemt/main/Dockerfile
+curl -fsSLo build.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/build.sh
+curl -fsSLo install_docker-telemt.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/install_docker-telemt.sh
+chmod +x ./build.sh ./install_docker-telemt.sh
+./install_docker-telemt.sh -lang ru
+```
+
+Если файлы уже лежат на сервере:
+
 ```bash
 chmod +x ./build.sh
 ./build.sh
@@ -232,6 +274,48 @@ Default target is `prod`:
 There is also a `debug` target based on `debian:12-slim` with `curl`, `iproute2`, and `busybox`.
 
 ### Local Build
+
+Download the repository with Git and run the installer:
+
+```bash
+apt update
+apt install -y git ca-certificates
+cd /root
+git clone https://github.com/Telemtinstall/telemt.git docker-telemt
+cd /root/docker-telemt
+chmod +x ./build.sh ./install_docker-telemt.sh
+./install_docker-telemt.sh
+```
+
+Download only the required files with `wget`:
+
+```bash
+apt update
+apt install -y ca-certificates wget
+mkdir -p /root/docker-telemt
+cd /root/docker-telemt
+wget -O Dockerfile https://raw.githubusercontent.com/Telemtinstall/telemt/main/Dockerfile
+wget -O build.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/build.sh
+wget -O install_docker-telemt.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/install_docker-telemt.sh
+chmod +x ./build.sh ./install_docker-telemt.sh
+./install_docker-telemt.sh
+```
+
+Download only the required files with `curl`:
+
+```bash
+apt update
+apt install -y ca-certificates curl
+mkdir -p /root/docker-telemt
+cd /root/docker-telemt
+curl -fsSLo Dockerfile https://raw.githubusercontent.com/Telemtinstall/telemt/main/Dockerfile
+curl -fsSLo build.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/build.sh
+curl -fsSLo install_docker-telemt.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/install_docker-telemt.sh
+chmod +x ./build.sh ./install_docker-telemt.sh
+./install_docker-telemt.sh
+```
+
+If the files are already on the server:
 
 ```bash
 chmod +x ./build.sh
