@@ -4,6 +4,7 @@ services:
     container_name: telemt
     restart: unless-stopped
     network_mode: host
+    user: "65532:65532"
     environment:
       RUST_LOG: "warn"
     volumes:
@@ -26,5 +27,5 @@ services:
       driver: "none"
     ulimits:
       nofile:
-        soft: 65536
-        hard: 262144
+        soft: 65535
+        hard: 65535

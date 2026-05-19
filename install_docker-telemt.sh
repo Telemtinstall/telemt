@@ -989,16 +989,17 @@ services:
     container_name: telemt
     restart: unless-stopped
     network_mode: host
+    user: "65532:65532"
     environment:
-      RUST_LOG: "error"
+      RUST_LOG: "warn"
     volumes:
       - ${INSTALL_DIR}/telemt.toml:/etc/telemt/telemt.toml:ro
     command: ["/etc/telemt/telemt.toml"]
 ${hardening_block}${logging_block}
     ulimits:
       nofile:
-        soft: 65536
-        hard: 262144
+        soft: 65535
+        hard: 65535
 EOF
   chmod 600 "$INSTALL_DIR/docker-compose.yml"
 }

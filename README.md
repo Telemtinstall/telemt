@@ -205,7 +205,7 @@ PUSH               1 публикует image, по умолчанию 0
 - root filesystem read-only;
 - `cap_drop: ALL`;
 - `no-new-privileges`;
-- `ulimits.nofile` поднят до `65536/262144`.
+- `ulimits.nofile` поднят до `65535/65535`.
 
 ## EN
 
@@ -390,7 +390,7 @@ PUSH               1 publishes the image, default is 0
 - read-only root filesystem;
 - `cap_drop: ALL`;
 - `no-new-privileges`;
-- `ulimits.nofile` raised to `65536/262144`.
+- `ulimits.nofile` raised to `65535/65535`.
 
 ## Source
 
