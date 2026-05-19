@@ -500,11 +500,47 @@ ensure_secret() {
   if [ -z "${TELEMT_SECRET:-}" ]; then
     TELEMT_SECRET="$(openssl rand -hex 16)"
   fi
+  TELEMT_SECRET="$(printf '%s' "$TELEMT_SECRET" | tr 'A-F' 'a-f')"
+  [[ "$TELEMT_SECRET" =~ ^[a-f0-9]{32}$ ]] || die "Telemt secret must be exactly 32 hex chars."
   umask 077
   cat > "$SECRET_FILE" <<EOF
 TELEMT_SECRET=$(printf '%q' "$TELEMT_SECRET")
 EOF
   chmod 600 "$SECRET_FILE"
+}
+
+hex_encode_ascii() {
+  LC_ALL=C printf '%s' "$1" | od -An -tx1 -v | tr -d ' \n'
+}
+
+write_proxy_links() {
+  local users_json="$1"
+  local domain_hex tls_secret https_link tg_link api_link
+
+  domain_hex="$(hex_encode_ascii "$DOMAIN")"
+  tls_secret="ee${TELEMT_SECRET}${domain_hex}"
+  [[ "$tls_secret" =~ ^ee[a-f0-9]{34,}$ ]] || die "Generated MTProxy TLS secret is invalid."
+
+  https_link="https://t.me/proxy?server=${DOMAIN}&port=443&secret=${tls_secret}"
+  tg_link="tg://proxy?server=${DOMAIN}&port=443&secret=${tls_secret}"
+  api_link=""
+
+  if command -v jq >/dev/null 2>&1; then
+    api_link="$(jq -r '.. | strings | select(startswith("tg://proxy?"))' "$users_json" 2>/dev/null | head -n 1 || true)"
+  else
+    api_link="$(grep -o 'tg://proxy[^"]*' "$users_json" | head -n 1 || true)"
+  fi
+
+  {
+    printf '%s\n' "$https_link"
+    printf '%s\n' "$tg_link"
+    if [ -n "$api_link" ]; then
+      printf '\n# Telemt API link, for comparison only:\n%s\n' "$api_link"
+    fi
+  } > /root/telemt-proxy-links.txt
+
+  printf '%s\n' "$https_link" > /root/telemt-proxy-link.txt
+  chmod 600 /root/telemt-proxy-link.txt /root/telemt-proxy-links.txt 2>/dev/null || true
 }
 
 configure_high_load() {
@@ -1215,8 +1251,7 @@ validate_install() {
   ss -lntp | grep -E ':(80|443|8443|1443|9090|9091)\b' || true
   curl -fsS "http://127.0.0.1:9091/v1/users" | tee /tmp/telemt-users.json >/dev/null
   grep -q '"ok":true' /tmp/telemt-users.json
-  grep -o 'tg://proxy[^"]*' /tmp/telemt-users.json > /root/telemt-proxy-link.txt || true
-  chmod 600 /root/telemt-proxy-link.txt 2>/dev/null || true
+  write_proxy_links /tmp/telemt-users.json
 
   local probe_log="/root/telemt-active-probing-check.txt"
   : > "$probe_log"
@@ -1570,15 +1605,16 @@ main() {
 
 Готово.
 
-Ссылка прокси:
-$(cat /root/telemt-proxy-link.txt 2>/dev/null || true)
+Ссылки прокси:
+$(cat /root/telemt-proxy-links.txt 2>/dev/null || cat /root/telemt-proxy-link.txt 2>/dev/null || true)
 
 Файлы:
   конфиг:       $INSTALL_DIR/telemt.toml
   compose:      $INSTALL_DIR/docker-compose.yml
   секрет:       $SECRET_FILE
   сохраненный ввод: $SAVED_CONFIG
-  ссылка:       /root/telemt-proxy-link.txt
+  ссылки:       /root/telemt-proxy-links.txt
+  основная ссылка: /root/telemt-proxy-link.txt
   active probe: /root/telemt-active-probing-check.txt
 
 Команды:
@@ -1591,15 +1627,16 @@ EOF
 
 Done.
 
-Proxy link:
-$(cat /root/telemt-proxy-link.txt 2>/dev/null || true)
+Proxy links:
+$(cat /root/telemt-proxy-links.txt 2>/dev/null || cat /root/telemt-proxy-link.txt 2>/dev/null || true)
 
 Files:
   config:       $INSTALL_DIR/telemt.toml
   compose:      $INSTALL_DIR/docker-compose.yml
   secret:       $SECRET_FILE
   saved input:  $SAVED_CONFIG
-  link:         /root/telemt-proxy-link.txt
+  links:        /root/telemt-proxy-links.txt
+  primary link: /root/telemt-proxy-link.txt
   active probe: /root/telemt-active-probing-check.txt
 
 Commands:

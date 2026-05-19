@@ -14,6 +14,7 @@
 - Removed default Docker CPU/RAM/PID limits from generated compose files. Hardening still keeps `read_only`, `cap_drop`, `no-new-privileges`, `tmpfs`, healthcheck, and high `nofile` ulimits.
 - Aligned generated Docker compose with the live Telemt standard: explicit non-root `user: "65532:65532"`, `RUST_LOG=warn`, `logging.driver=none` by default, and `nofile=65535/65535`.
 - Added copy-paste Git, `wget`, and `curl` download commands for the Docker installer in RU and EN documentation.
+- Fixed Docker installer proxy link generation: links are now built explicitly as valid TLS MTProxy links, saved in both `https://t.me/proxy` and `tg://proxy` forms, instead of relying on fragile JSON `grep` extraction.
 
 ## 2026-05-11
 

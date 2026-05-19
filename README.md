@@ -195,6 +195,15 @@ curl -4 -I --resolve <domain>:443:<server_ipv4> https://<domain>/
 
 По умолчанию используется красивая заглушка. Если выбрать `empty`, nginx будет отдавать пустой `index.html` с `200 OK`, без видимого текста. Логи доступа выключены. Docker hardening включен по умолчанию, но его можно отключить. High-load tuning выключен и применяется только после отдельного подтверждения. Дефолтный лимит Telemt поднят до `5000` подключений.
 
+В конце скрипт сам собирает корректные ссылки для TLS MTProxy:
+
+```text
+https://t.me/proxy?server=<domain>&port=443&secret=<tls_secret>
+tg://proxy?server=<domain>&port=443&secret=<tls_secret>
+```
+
+Ссылки сохраняются в `/root/telemt-proxy-links.txt`, а основная HTTPS-ссылка для быстрого копирования — в `/root/telemt-proxy-link.txt`. `secret` собирается как `ee + 32_hex_secret + hex(domain)`, чтобы Telegram не ругался на неверный параметр ключа.
+
 Если Docker hardening включен, compose добавляет:
 
 ```text
@@ -421,6 +430,15 @@ curl -4 -I --resolve <domain>:443:<server_ipv4> https://<domain>/
 The result is saved to `/root/telemt-active-probing-check.txt`. If a normal HTTPS request through the server IP does not return a valid response, the installer stops with an error because the masking layer is not working correctly. On failure, the script prints diagnostics automatically: DNS A/AAAA, listening ports, `nginx -t`, stream config presence, `docker ps`, recent Telemt logs, and firewall state. If the output contains `BIO_connect:connect error`, TCP `443` is usually blocked by the server/provider firewall or nginx stream is not listening on the public `443`.
 
 The playful placeholder is used by default. If `empty` is selected, nginx serves an empty `index.html` with `200 OK` and no visible text. Access logs are disabled by default. Docker hardening is enabled by default, but can be disabled. High-load tuning is disabled and is applied only after explicit confirmation. The default Telemt connection limit is now `5000`.
+
+At the end, the script generates valid TLS MTProxy links itself:
+
+```text
+https://t.me/proxy?server=<domain>&port=443&secret=<tls_secret>
+tg://proxy?server=<domain>&port=443&secret=<tls_secret>
+```
+
+Links are saved to `/root/telemt-proxy-links.txt`, and the primary HTTPS link for quick copy-paste is saved to `/root/telemt-proxy-link.txt`. The `secret` is built as `ee + 32_hex_secret + hex(domain)` so Telegram does not reject the link with an invalid key parameter.
 
 When Docker hardening is enabled, compose adds:
 
