@@ -513,10 +513,46 @@ hex_encode_ascii() {
   LC_ALL=C printf '%s' "$1" | od -An -tx1 -v | tr -d ' \n'
 }
 
+load_existing_secret_for_links() {
+  if [ -z "${TELEMT_SECRET:-}" ] && [ -f "$SECRET_FILE" ]; then
+    # shellcheck disable=SC1090
+    source "$SECRET_FILE"
+  fi
+
+  if [ -z "${TELEMT_SECRET:-}" ] && [ -f "$INSTALL_DIR/telemt.toml" ]; then
+    TELEMT_SECRET="$(
+      awk -v user="$TELEMT_USER" '
+        /^\[access\.users\]/ {in_users=1; next}
+        /^\[/ && in_users {in_users=0}
+        in_users {
+          line=$0
+          sub(/#.*/, "", line)
+          eq=index(line, "=")
+          if (!eq) next
+          key=substr(line, 1, eq - 1)
+          val=substr(line, eq + 1)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+          gsub(/^"|"$/, "", key)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+          gsub(/^"|"$/, "", val)
+          if (key == user && val ~ /^[A-Fa-f0-9]{32}$/) {
+            print val
+            exit
+          }
+        }
+      ' "$INSTALL_DIR/telemt.toml"
+    )"
+  fi
+
+  TELEMT_SECRET="$(printf '%s' "${TELEMT_SECRET:-}" | tr 'A-F' 'a-f')"
+  [[ "$TELEMT_SECRET" =~ ^[a-f0-9]{32}$ ]] || die "Cannot load the existing 32-hex Telemt secret for link generation."
+}
+
 write_proxy_links() {
   local users_json="$1"
   local domain_hex tls_secret https_link tg_link api_link
 
+  load_existing_secret_for_links
   domain_hex="$(hex_encode_ascii "$DOMAIN")"
   tls_secret="ee${TELEMT_SECRET}${domain_hex}"
   [[ "$tls_secret" =~ ^ee[a-f0-9]{34,}$ ]] || die "Generated MTProxy TLS secret is invalid."
