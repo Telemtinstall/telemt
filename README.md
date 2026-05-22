@@ -149,6 +149,16 @@ chmod +x ./install_docker-telemt.sh
 ./install_docker-telemt.sh -lang ru
 ```
 
+Обновить уже установленный сервер без перезаписи текущих настроек:
+
+```bash
+./install_docker-telemt.sh --update -lang ru
+```
+
+Режим `--update` сохраняет существующие `/opt/telemt-docker/telemt.toml`, `docker-compose.yml`, секреты, ссылки и nginx-конфиги. Он пересобирает локальный Docker image `telemt-local:latest` из актуального upstream release, пересоздает контейнер и заново выполняет API/active-probing проверку. Если в конфиге что-то было поправлено руками, эти правки не перезаписываются.
+
+Домены можно вводить как обычные ASCII-домены, как punycode (`xn--...`) или кириллицей. Установщик переводит IDN в punycode/ASCII перед DNS, Let's Encrypt, nginx и MTProxy-ссылками. Если введен некорректный punycode, установка останавливается до изменения системы.
+
 На чистом VPS обычно вход выполняется сразу под `root`, поэтому `sudo` не нужен и может быть не установлен. Если вы запускаете не под `root`, используйте:
 
 ```bash
@@ -219,6 +229,15 @@ Docker healthcheck
 CPU/RAM/PID лимиты в compose не задаются. Это сделано специально, чтобы Telemt не упирался в искусственные ограничения при большом числе клиентов и загрузке медиа.
 
 Если Docker hardening отключен, контейнер запускается проще: без `read_only`, `cap_drop`, `no-new-privileges`, `tmpfs` и без compose healthcheck.
+
+Для Telemt `3.4.12+` новые установки также добавляют явную секцию:
+
+```toml
+[censorship.exclusive_mask]
+"<domain>" = "127.0.0.1:8443"
+```
+
+Это закрепляет fallback-трафик с SNI вашего домена за локальным HTTPS mask site. Остальной fallback продолжает работать через обычные `mask_host`/`mask_port`. В режиме `--update` существующий `telemt.toml` не меняется, чтобы не потерять ручные правки.
 
 ### Публикация
 
@@ -387,6 +406,16 @@ Russian installer UI:
 ./install_docker-telemt.sh -lang ru
 ```
 
+Update an already installed server without rewriting current settings:
+
+```bash
+./install_docker-telemt.sh --update -lang ru
+```
+
+The `--update` mode preserves existing `/opt/telemt-docker/telemt.toml`, `docker-compose.yml`, secrets, links, and nginx configs. It rebuilds the local `telemt-local:latest` Docker image from the current upstream release, recreates the container, and runs the API/active-probing validation again. Manual edits in the existing config are not overwritten.
+
+Domains may be entered as regular ASCII domains, punycode (`xn--...`), or Cyrillic/IDN names. The installer converts IDN names to punycode/ASCII before DNS checks, Let's Encrypt, nginx, and MTProxy link generation. Invalid punycode is rejected before system changes.
+
 On a clean VPS you usually log in as `root`, so `sudo` is not needed and may not be installed. If you are not root, use:
 
 ```bash
@@ -457,6 +486,15 @@ Docker healthcheck
 Compose does not set CPU/RAM/PID limits. This is intentional, so Telemt does not hit artificial limits when many clients load media.
 
 When Docker hardening is disabled, the container runs in a simpler mode without `read_only`, `cap_drop`, `no-new-privileges`, `tmpfs`, and compose healthcheck.
+
+For Telemt `3.4.12+`, new installs also add an explicit section:
+
+```toml
+[censorship.exclusive_mask]
+"<domain>" = "127.0.0.1:8443"
+```
+
+This pins fallback traffic with your domain SNI to the local HTTPS mask site. Other fallback traffic keeps using normal `mask_host`/`mask_port`. In `--update` mode, the existing `telemt.toml` is not changed, so manual edits are preserved.
 
 ### Publishing
 

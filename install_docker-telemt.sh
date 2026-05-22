@@ -22,6 +22,8 @@ AUTO_BUILD_IMAGE="${AUTO_BUILD_IMAGE:-yes}"
 MASK_SITE_MODE="${MASK_SITE_MODE:-fancy}"
 SCRIPT_LANG="${SCRIPT_LANG:-en}"
 ASSUME_YES="${ASSUME_YES:-0}"
+UPDATE_MODE="${UPDATE_MODE:-0}"
+NO_CACHE="${NO_CACHE:-0}"
 
 PUBLIC_IP=""
 SCRIPT_LANG_FROM_CLI="0"
@@ -63,15 +65,20 @@ usage() {
   if is_ru; then
     cat <<'EOF'
 Использование:
-  ./install_docker-telemt.sh [-lang ru|en]
+  ./install_docker-telemt.sh [-lang ru|en] [--update]
 
 Примеры:
   ./install_docker-telemt.sh
   ./install_docker-telemt.sh -lang ru
   ./install_docker-telemt.sh --lang en
+  ./install_docker-telemt.sh --update -lang ru
 
 Опции:
   -lang, --lang   Язык интерфейса установщика: en или ru.
+  -update, --update
+                  Обновить Docker image Telemt и перезапустить контейнер,
+                  сохранив существующие telemt.toml, docker-compose.yml,
+                  секреты, ссылки и nginx-конфиги.
   -h, --help      Показать эту справку.
 EOF
     return 0
@@ -79,15 +86,20 @@ EOF
 
   cat <<'EOF'
 Usage:
-  ./install_docker-telemt.sh [-lang ru|en]
+  ./install_docker-telemt.sh [-lang ru|en] [--update]
 
 Examples:
   ./install_docker-telemt.sh
   ./install_docker-telemt.sh -lang ru
   ./install_docker-telemt.sh --lang en
+  ./install_docker-telemt.sh --update -lang ru
 
 Options:
   -lang, --lang   Installer interface language: en or ru.
+  -update, --update
+                  Update the Telemt Docker image and recreate the container
+                  while preserving existing telemt.toml, docker-compose.yml,
+                  secrets, links, and nginx configs.
   -h, --help      Show this help.
 EOF
 }
@@ -111,6 +123,9 @@ parse_args() {
       -h|--help)
         usage
         exit 0
+        ;;
+      -update|--update|update)
+        UPDATE_MODE="1"
         ;;
       *)
         die "Unknown argument: $1"
@@ -224,6 +239,107 @@ ask_mask_site_mode() {
       say "Please answer fancy or empty."
     fi
   done
+}
+
+needs_idn_normalization() {
+  local value="$1"
+  case "$value" in
+    *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-]*|*xn--*|*XN--*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+ensure_python3_for_idn() {
+  if have python3; then
+    return 0
+  fi
+  if ! have apt-get; then
+    die "python3 is required for IDN/punycode domain normalization."
+  fi
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3-minimal
+  have python3 || die "python3 is required for IDN/punycode domain normalization."
+}
+
+domain_to_ascii() {
+  local value="$1"
+  ensure_python3_for_idn
+  python3 - "$value" <<'PY'
+import sys
+
+domain = sys.argv[1].strip().rstrip(".").lower()
+if not domain:
+    print("empty domain", file=sys.stderr)
+    sys.exit(1)
+if any(ch.isspace() or ch in "/\\" for ch in domain):
+    print("domain contains whitespace, slash, or backslash", file=sys.stderr)
+    sys.exit(1)
+try:
+    ascii_domain = domain.encode("idna").decode("ascii").lower()
+    decoded = ascii_domain.encode("ascii").decode("idna")
+    roundtrip = decoded.encode("idna").decode("ascii").lower()
+except Exception as exc:
+    print(f"IDNA/punycode conversion failed: {exc}", file=sys.stderr)
+    sys.exit(1)
+if ascii_domain != roundtrip:
+    print("IDNA/punycode round-trip check failed", file=sys.stderr)
+    sys.exit(1)
+labels = ascii_domain.split(".")
+if len(labels) < 2 or any(not label for label in labels):
+    print("domain must contain at least two non-empty labels", file=sys.stderr)
+    sys.exit(1)
+if any(len(label) > 63 for label in labels) or len(ascii_domain) > 253:
+    print("domain is too long after IDNA conversion", file=sys.stderr)
+    sys.exit(1)
+for label in labels:
+    if label.startswith("-") or label.endswith("-"):
+        print("domain label starts or ends with '-'", file=sys.stderr)
+        sys.exit(1)
+    if not all(ch.isalnum() or ch == "-" for ch in label):
+        print("domain contains invalid ASCII characters after IDNA conversion", file=sys.stderr)
+        sys.exit(1)
+print(ascii_domain)
+PY
+}
+
+normalize_domain_input() {
+  local original="$DOMAIN"
+  DOMAIN="$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]')"
+  DOMAIN="${DOMAIN%.}"
+  if needs_idn_normalization "$DOMAIN"; then
+    DOMAIN="$(domain_to_ascii "$DOMAIN")" || die "Bad domain: $original"
+  fi
+  if [ "$DOMAIN" != "$original" ]; then
+    if is_ru; then
+      say "Домен нормализован в punycode/ASCII: $original -> $DOMAIN"
+    else
+      say "Domain normalized to punycode/ASCII: $original -> $DOMAIN"
+    fi
+  fi
+}
+
+normalize_email_input() {
+  local local_part domain_part ascii_domain original="$EMAIL"
+  local_part="${EMAIL%@*}"
+  domain_part="${EMAIL#*@}"
+  [ "$local_part" != "$EMAIL" ] || die "Bad email: $EMAIL"
+  [ -n "$local_part" ] || die "Bad email: $EMAIL"
+  [[ "$local_part" =~ ^[A-Za-z0-9._%+-]+$ ]] || die "Bad email local part: $EMAIL"
+  domain_part="$(printf '%s' "$domain_part" | tr '[:upper:]' '[:lower:]')"
+  domain_part="${domain_part%.}"
+  if needs_idn_normalization "$domain_part"; then
+    ascii_domain="$(domain_to_ascii "$domain_part")" || die "Bad email domain: $original"
+  else
+    ascii_domain="$domain_part"
+  fi
+  EMAIL="${local_part}@${ascii_domain}"
+  if [ "$EMAIL" != "$original" ]; then
+    if is_ru; then
+      say "Email нормализован в punycode/ASCII: $original -> $EMAIL"
+    else
+      say "Email normalized to punycode/ASCII: $original -> $EMAIL"
+    fi
+  fi
 }
 
 validate_inputs() {
@@ -452,8 +568,31 @@ build_local_image() {
   say "  version: ${image_tag}"
   (
     cd "$(dirname "$build_script")"
-    IMAGE="$image_name" TELEMT_VERSION="$image_tag" PUSH=0 "$build_script"
+    IMAGE="$image_name" TELEMT_VERSION="$image_tag" NO_CACHE="$NO_CACHE" PUSH=0 "$build_script"
   )
+}
+
+refresh_docker_image_for_update() {
+  local parsed image_name image_tag old_no_cache
+
+  if [[ "$TELEMT_IMAGE" != telemt-local:* ]]; then
+    say "Pulling Docker image for update: $TELEMT_IMAGE"
+    docker pull "$TELEMT_IMAGE"
+    return 0
+  fi
+
+  parsed="$(image_name_and_tag "$TELEMT_IMAGE")" || die "Cannot rebuild digest-pinned image: $TELEMT_IMAGE"
+  image_name="$(printf '%s\n' "$parsed" | sed -n '1p')"
+  image_tag="$(printf '%s\n' "$parsed" | sed -n '2p')"
+
+  old_no_cache="$NO_CACHE"
+  if [ "$image_tag" = "latest" ]; then
+    NO_CACHE=1
+  fi
+  TELEMT_VERSION="$image_tag"
+  say "Rebuilding local Telemt image for update: ${image_name}:${image_tag}"
+  build_local_image
+  NO_CACHE="$old_no_cache"
 }
 
 check_docker_image() {
@@ -608,6 +747,26 @@ EOF
 
   chmod 0644 /etc/sysctl.d/99-telemt-high-load.conf
   sysctl --system
+}
+
+telemt_version_supports_exclusive_mask() {
+  local version="${TELEMT_VERSION:-latest}"
+  local major minor patch
+
+  version="${version#v}"
+  if [ "$version" = "latest" ]; then
+    return 0
+  fi
+  [[ "$version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || return 1
+  IFS=. read -r major minor patch <<< "$version"
+  minor="${minor:-0}"
+  patch="${patch:-0}"
+
+  (( major > 3 )) && return 0
+  (( major < 3 )) && return 1
+  (( minor > 4 )) && return 0
+  (( minor < 4 )) && return 1
+  (( patch >= 12 ))
 }
 
 write_mask_site_http_only() {
@@ -1205,6 +1364,15 @@ tls_emulation = true
 tls_front_dir = "/tmp/telemt-tlsfront"
 tls_full_cert_ttl_secs = 0
 alpn_enforce = true
+EOF
+    if telemt_version_supports_exclusive_mask; then
+      cat <<EOF
+
+[censorship.exclusive_mask]
+"${DOMAIN}" = "127.0.0.1:8443"
+EOF
+    fi
+    cat <<EOF
 
 [access]
 replay_check_len = 65536
@@ -1703,8 +1871,10 @@ interactive_inputs() {
 EOF
 
     ask_default DOMAIN "Домен прокси" "$DOMAIN"
+    normalize_domain_input
     EMAIL="${EMAIL:-admin@$DOMAIN}"
     ask_default EMAIL "Email для Let's Encrypt" "$EMAIL"
+    normalize_email_input
     ask_default TELEMT_IMAGE "Docker image Telemt" "$TELEMT_IMAGE"
     ask_mask_site_mode
     ask_default TELEMT_USER "Имя пользователя Telemt" "$TELEMT_USER"
@@ -1723,8 +1893,10 @@ Before running:
 EOF
 
     ask_default DOMAIN "Proxy domain" "$DOMAIN"
+    normalize_domain_input
     EMAIL="${EMAIL:-admin@$DOMAIN}"
     ask_default EMAIL "Let's Encrypt email" "$EMAIL"
+    normalize_email_input
     ask_default TELEMT_IMAGE "Telemt Docker image" "$TELEMT_IMAGE"
     ask_mask_site_mode
     ask_default TELEMT_USER "Telemt user name" "$TELEMT_USER"
@@ -1752,6 +1924,196 @@ EOF
   fi
 }
 
+toml_value_from_section() {
+  local file="$1"
+  local section="$2"
+  local key="$3"
+  [ -f "$file" ] || return 1
+  awk -v section="$section" -v wanted="$key" '
+    $0 ~ "^\\[" section "\\]" {in_section=1; next}
+    /^\[/ && in_section {in_section=0}
+    in_section {
+      line=$0
+      sub(/#.*/, "", line)
+      eq=index(line, "=")
+      if (!eq) next
+      key=substr(line, 1, eq - 1)
+      val=substr(line, eq + 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      gsub(/^"|"$/, "", key)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+      gsub(/^"|"$/, "", val)
+      if (key == wanted) {
+        print val
+        exit
+      }
+    }
+  ' "$file"
+}
+
+first_toml_key_from_section() {
+  local file="$1"
+  local section="$2"
+  [ -f "$file" ] || return 1
+  awk -v section="$section" '
+    $0 ~ "^\\[" section "\\]" {in_section=1; next}
+    /^\[/ && in_section {in_section=0}
+    in_section {
+      line=$0
+      sub(/#.*/, "", line)
+      eq=index(line, "=")
+      if (!eq) next
+      key=substr(line, 1, eq - 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      gsub(/^"|"$/, "", key)
+      if (key != "") {
+        print key
+        exit
+      }
+    }
+  ' "$file"
+}
+
+compose_image_from_file() {
+  local file="$1"
+  [ -f "$file" ] || return 1
+  awk '
+    /^[[:space:]]*image:[[:space:]]*/ {
+      value=$0
+      sub(/^[[:space:]]*image:[[:space:]]*/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      gsub(/^"|"$/, "", value)
+      gsub(/^'\''|'\''$/, "", value)
+      print value
+      exit
+    }
+  ' "$file"
+}
+
+infer_update_config_from_existing_files() {
+  local existing_domain existing_user existing_image
+
+  if [ -f "$INSTALL_DIR/telemt.toml" ]; then
+    existing_domain="$(toml_value_from_section "$INSTALL_DIR/telemt.toml" "general\\.links" "public_host" || true)"
+    if [ -z "$existing_domain" ]; then
+      existing_domain="$(toml_value_from_section "$INSTALL_DIR/telemt.toml" "censorship" "tls_domain" || true)"
+    fi
+    existing_user="$(first_toml_key_from_section "$INSTALL_DIR/telemt.toml" "access\\.users" || true)"
+    [ -n "$existing_domain" ] && DOMAIN="${DOMAIN:-$existing_domain}"
+    [ -n "$existing_user" ] && TELEMT_USER="${TELEMT_USER:-$existing_user}"
+  fi
+
+  existing_image="$(compose_image_from_file "$INSTALL_DIR/docker-compose.yml" || true)"
+  [ -n "$existing_image" ] && TELEMT_IMAGE="$existing_image"
+
+  if [ -n "$DOMAIN" ]; then
+    normalize_domain_input
+  fi
+}
+
+backup_update_state() {
+  local backup_dir
+  backup_dir="/root/telemt-docker-update-backups/$(date +%Y%m%d-%H%M%S)"
+  install -d -m 0700 "$backup_dir"
+
+  for path in \
+    "$INSTALL_DIR/telemt.toml" \
+    "$INSTALL_DIR/docker-compose.yml" \
+    "$SECRET_FILE" \
+    "$SAVED_CONFIG" \
+    "/etc/nginx/sites-available/$DOMAIN" \
+    "/etc/nginx/sites-enabled/$DOMAIN" \
+    /etc/nginx/modules-enabled/60-telemt-stream-sni.conf \
+    /root/telemt-proxy-links.txt \
+    /root/telemt-proxy-link.txt
+  do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      cp -a "$path" "$backup_dir"/
+    fi
+  done
+  chmod -R go-rwx "$backup_dir" 2>/dev/null || true
+  if is_ru; then
+    say "Бэкап перед обновлением: $backup_dir"
+  else
+    say "Update backup: $backup_dir"
+  fi
+}
+
+run_update_mode() {
+  if is_ru; then
+    say "Режим update: сохраняю существующие настройки и обновляю только Docker image/контейнер."
+  else
+    say "Update mode: preserving existing settings and updating only the Docker image/container."
+  fi
+
+  [ -d "$INSTALL_DIR" ] || die "Install directory not found: $INSTALL_DIR"
+  [ -f "$INSTALL_DIR/docker-compose.yml" ] || die "docker-compose.yml not found: $INSTALL_DIR/docker-compose.yml"
+  [ -f "$INSTALL_DIR/telemt.toml" ] || die "telemt.toml not found: $INSTALL_DIR/telemt.toml"
+
+  infer_update_config_from_existing_files
+  [ -n "$DOMAIN" ] || die "Cannot detect domain from saved config or $INSTALL_DIR/telemt.toml."
+  [ -n "$TELEMT_USER" ] || die "Cannot detect Telemt user from saved config or $INSTALL_DIR/telemt.toml."
+
+  PUBLIC_IP="$(public_ipv4)"
+  if ! [[ "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    die "Cannot detect public IPv4."
+  fi
+
+  if is_ru; then
+    cat <<EOF
+
+План обновления:
+  домен:            $DOMAIN
+  публичный IPv4:   $PUBLIC_IP
+  Docker image:     $TELEMT_IMAGE
+  каталог:          $INSTALL_DIR
+  конфиг Telemt:    будет сохранен без перезаписи
+  compose:          будет сохранен без перезаписи
+  секреты/ссылки:   будут сохранены, ссылки будут пересобраны из текущего секрета
+
+EOF
+  else
+    cat <<EOF
+
+Update plan:
+  domain:           $DOMAIN
+  public IPv4:      $PUBLIC_IP
+  Docker image:     $TELEMT_IMAGE
+  directory:        $INSTALL_DIR
+  Telemt config:    preserved without rewrite
+  compose:          preserved without rewrite
+  secrets/links:    preserved; links regenerated from the existing secret
+
+EOF
+  fi
+  confirm_plan
+
+  ensure_docker_available
+  backup_update_state
+  refresh_docker_image_for_update
+  fix_runtime_permissions
+  start_telemt
+  validate_install
+
+  if is_ru; then
+    cat <<EOF
+
+Обновление готово.
+
+Ссылки прокси:
+$(cat /root/telemt-proxy-links.txt 2>/dev/null || cat /root/telemt-proxy-link.txt 2>/dev/null || true)
+EOF
+  else
+    cat <<EOF
+
+Update done.
+
+Proxy links:
+$(cat /root/telemt-proxy-links.txt 2>/dev/null || cat /root/telemt-proxy-link.txt 2>/dev/null || true)
+EOF
+  fi
+}
+
 main() {
   parse_args "$@"
   need_root
@@ -1760,7 +2122,13 @@ main() {
   if [ "$SCRIPT_LANG_FROM_CLI" = "1" ]; then
     SCRIPT_LANG="$requested_script_lang"
   fi
+  if [ "$UPDATE_MODE" = "1" ]; then
+    run_update_mode
+    exit 0
+  fi
   interactive_inputs
+  normalize_domain_input
+  normalize_email_input
   validate_inputs
   save_config
 

@@ -17,6 +17,9 @@
 - Fixed Docker installer proxy link generation: links are now built explicitly as valid TLS MTProxy links, saved in both `https://t.me/proxy` and `tg://proxy` forms, instead of relying on fragile JSON `grep` extraction.
 - Fixed resume-mode link generation: reruns now load the existing secret from `telemt-secret.env` or the installed `telemt.toml` instead of failing with an unbound `TELEMT_SECRET`.
 - Added an ACME HTTP-01 preflight before `certbot`: the installer now creates a temporary challenge file, verifies it locally and through the server public IPv4, opens `80/443` in active UFW/firewalld before certificate issuance, and writes clear diagnostics to `/root/telemt-acme-http01-check.txt` when the challenge path is unreachable.
+- Added `--update` mode for the Docker installer. It preserves existing `telemt.toml`, `docker-compose.yml`, secrets, links, and nginx configs, rebuilds/pulls the Telemt image, recreates the container, and reruns validation.
+- Added IDN/punycode normalization for domains and Let's Encrypt email domains. Cyrillic/IDN input is converted to ASCII punycode; invalid punycode is rejected before system changes.
+- Added explicit `censorship.exclusive_mask` for new Telemt `3.4.12+` installs so the configured SNI domain is pinned to the local HTTPS mask backend.
 
 ## 2026-05-11
 
