@@ -12,6 +12,7 @@
 - Normal installer mode now refuses to run over an existing installation unless `RESET_INSTALL_STATE=1` is explicitly set. Existing installs should use `--update` or `--fix-nginx`.
 - Restored the dark mask-site placeholder and removed service/administrator text from the generated page. `--fix-nginx` now also refreshes the existing mask page without changing Telemt secrets, certificates, or `telemt.toml`.
 - Fixed the mask-page refresh path in `--fix-nginx`: repair mode now updates the HTML and restores the local `127.0.0.1:8443` HTTPS mask server when a certificate exists, without rewriting the nginx stream map.
+- Stopped assuming `TELEMT_VERSION=latest` supports optional `censorship.exclusive_mask`. Strict Telemt configs no longer get that block for moving `latest` images, and `--fix-nginx` removes the optional block from existing configs when present.
 - `RESET_INSTALL_STATE=1` now clears the installer resume state before running, so a clean reinstall no longer skips certificate/mask-site steps as "already done".
 - Container start now removes an existing `telemt` container before `compose up` to avoid the Docker Compose v1 `KeyError: ContainerConfig` recreate bug.
 - Improved the final active probing check in the Docker installer:

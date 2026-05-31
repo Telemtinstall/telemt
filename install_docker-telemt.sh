@@ -252,6 +252,21 @@ run_fix_nginx_mode() {
     say "WARN: cannot refresh mask site placeholder: domain was not detected"
   fi
 
+  if [ -f "$INSTALL_DIR/telemt.toml" ] && grep -q '^\[censorship\.exclusive_mask\]' "$INSTALL_DIR/telemt.toml"; then
+    install -d -m 0700 "$backup_dir$INSTALL_DIR"
+    cp -a "$INSTALL_DIR/telemt.toml" "$backup_dir$INSTALL_DIR/telemt.toml"
+    awk '
+      /^\[censorship\.exclusive_mask\]/ {skip=1; next}
+      /^\[/ && skip {skip=0}
+      !skip {print}
+    ' "$INSTALL_DIR/telemt.toml" > "$INSTALL_DIR/telemt.toml.tmp"
+    mv "$INSTALL_DIR/telemt.toml.tmp" "$INSTALL_DIR/telemt.toml"
+    chown 65532:65532 "$INSTALL_DIR/telemt.toml" 2>/dev/null || true
+    chmod 600 "$INSTALL_DIR/telemt.toml"
+    say "removed unsupported optional [censorship.exclusive_mask] block from $INSTALL_DIR/telemt.toml"
+    changed=1
+  fi
+
   if [ "$changed" = "0" ]; then
     if is_ru; then
       say "Несовместимых директив http2 не найдено."
@@ -1008,7 +1023,9 @@ telemt_version_supports_exclusive_mask() {
 
   version="${version#v}"
   if [ "$version" = "latest" ]; then
-    return 0
+    # "latest" is a moving local image tag. Do not assume it supports newer
+    # config keys because strict config validation would fail closed.
+    return 1
   fi
   [[ "$version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || return 1
   IFS=. read -r major minor patch <<< "$version"
