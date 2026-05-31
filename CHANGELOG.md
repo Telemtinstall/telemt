@@ -8,6 +8,7 @@
 - Clarified installer/help/README wording: repair mode preserves secrets, users, and certificates, and only edits `telemt.toml` for compatibility when an unsupported optional block prevents startup.
 - `RESET_INSTALL_STATE=1` is now a true clean install path: it removes saved prompts, old Telemt secret/config/compose/container/link files before asking questions, and rebuilds `telemt-local:latest` instead of reusing a stale local image.
 - nginx mask site config now uses an installer-owned file `telemt-mask-<domain>.conf`; legacy installer-generated vhosts are cleaned up when safe, while unrelated nginx site configs are left untouched.
+- Added copy-paste command blocks for fresh install, update, repair/doctor, and full reinstall to both RU and EN README sections.
 
 ## 2026-05-19
 

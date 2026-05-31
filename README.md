@@ -136,6 +136,49 @@ docker run --rm --entrypoint /app/telemt telemt-local:latest --version
 
 Перед запуском нужен чистый Debian/Ubuntu сервер, A-запись домена на IPv4 сервера и свободные `80/tcp`, `443/tcp`.
 
+### Готовые команды
+
+Установка с нуля на чистом сервере:
+
+```bash
+apt update
+apt install -y git ca-certificates
+cd /root
+git clone https://github.com/Telemtinstall/telemt.git docker-telemt
+cd /root/docker-telemt
+chmod +x ./build.sh ./install_docker-telemt.sh
+./install_docker-telemt.sh -lang ru
+```
+
+Обновить уже установленный Telemt без сброса настроек:
+
+```bash
+cd /root/docker-telemt
+git pull
+chmod +x ./build.sh ./install_docker-telemt.sh
+./install_docker-telemt.sh --update -lang ru
+```
+
+Починить уже установленный сервер: nginx/Docker/Telemt doctor:
+
+```bash
+cd /root/docker-telemt
+git pull
+chmod +x ./build.sh ./install_docker-telemt.sh
+./install_docker-telemt.sh --fix-nginx -lang ru
+```
+
+Полная переустановка на уже установленном сервере:
+
+```bash
+cd /root/docker-telemt
+git pull
+chmod +x ./build.sh ./install_docker-telemt.sh
+RESET_INSTALL_STATE=1 ./install_docker-telemt.sh -lang ru
+```
+
+Этот режим удаляет старый saved config, secret, `telemt.toml`, compose, контейнер и ссылки. Чужие nginx-сайты не трогает.
+
 На этапе сертификата установщик сначала проверяет HTTP-01 challenge без участия Let's Encrypt: создает временный файл в `/var/www/<domain>/.well-known/acme-challenge/`, проверяет его локально через nginx и затем через публичный IPv4 командой `curl -4 --resolve <domain>:80:<server_ipv4>`. Если файл не отдается, скрипт останавливается до `certbot` и пишет диагностику в `/root/telemt-acme-http01-check.txt`: DNS A/AAAA, слушающие порты, `nginx -t`, site config и firewall. Это помогает сразу увидеть закрытый `80/tcp`, неправильную A-запись, лишнюю AAAA-запись или CDN/proxy, который не пропускает `/.well-known/acme-challenge/`.
 
 Обычный запуск:
@@ -406,6 +449,49 @@ In this architecture, a normal scanner or browser without the MTProxy key receiv
 The mask site is intentionally configured as regular HTTPS without a separate `http2` directive. This stays compatible with nginx 1.24 and older Debian/Ubuntu packages where `http2 on;` fails with `unknown directive "http2"`. HTTP/2 is not needed for the camouflage site.
 
 Before running, use a clean Debian/Ubuntu server, create a DNS A record pointing to the server IPv4, and keep `80/tcp` and `443/tcp` free.
+
+### Ready Commands
+
+Fresh install on a clean server:
+
+```bash
+apt update
+apt install -y git ca-certificates
+cd /root
+git clone https://github.com/Telemtinstall/telemt.git docker-telemt
+cd /root/docker-telemt
+chmod +x ./build.sh ./install_docker-telemt.sh
+./install_docker-telemt.sh
+```
+
+Update an existing Telemt installation without resetting settings:
+
+```bash
+cd /root/docker-telemt
+git pull
+chmod +x ./build.sh ./install_docker-telemt.sh
+./install_docker-telemt.sh --update -lang ru
+```
+
+Repair an existing server: nginx/Docker/Telemt doctor:
+
+```bash
+cd /root/docker-telemt
+git pull
+chmod +x ./build.sh ./install_docker-telemt.sh
+./install_docker-telemt.sh --fix-nginx -lang ru
+```
+
+Full reinstall on an already installed server:
+
+```bash
+cd /root/docker-telemt
+git pull
+chmod +x ./build.sh ./install_docker-telemt.sh
+RESET_INSTALL_STATE=1 ./install_docker-telemt.sh -lang ru
+```
+
+This mode removes the old saved config, secret, `telemt.toml`, compose, container, and links. It does not touch unrelated nginx sites.
 
 During the certificate step, the installer first checks the HTTP-01 challenge without involving Let's Encrypt: it creates a temporary file under `/var/www/<domain>/.well-known/acme-challenge/`, checks it locally through nginx, and then checks it through the public IPv4 with `curl -4 --resolve <domain>:80:<server_ipv4>`. If the file is not reachable, the script stops before `certbot` and writes diagnostics to `/root/telemt-acme-http01-check.txt`: DNS A/AAAA, listening ports, `nginx -t`, site config, and firewall state. This usually points directly to a closed `80/tcp`, a wrong A record, an unwanted AAAA record, or a CDN/proxy that does not pass `/.well-known/acme-challenge/`.
 
