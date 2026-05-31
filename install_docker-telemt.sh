@@ -329,6 +329,10 @@ run_fix_nginx_mode() {
   fi
 
   if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
+    if ! ensure_compose_available; then
+      say "WARN: Docker Compose is not available"
+      doctor_failed=1
+    fi
     if (cd "$INSTALL_DIR" && compose_cmd config >/dev/null); then
       say "OK: docker compose config"
       if start_telemt; then
@@ -933,6 +937,65 @@ compose_cmd() {
   fi
 }
 
+install_compose_v2_if_possible() {
+  if docker compose version >/dev/null 2>&1; then
+    return 0
+  fi
+  have apt-get || return 1
+
+  if is_ru; then
+    say "Docker Compose v2 не найден. Пытаюсь установить Compose v2; системный Python не трогаю."
+  else
+    say "Docker Compose v2 was not found. Trying to install Compose v2; system Python is not changed."
+  fi
+
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-plugin || \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-v2 || \
+    return 1
+
+  docker compose version >/dev/null 2>&1
+}
+
+ensure_compose_available() {
+  local legacy_version
+
+  if docker compose version >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if have docker-compose; then
+    legacy_version="$(docker-compose version --short 2>/dev/null || docker-compose version 2>/dev/null | sed -n 's/.*version \([0-9][^, ]*\).*/\1/p' | head -n 1 || true)"
+    case "$legacy_version" in
+      1.*)
+        if is_ru; then
+          say "Найден старый docker-compose v1${legacy_version:+ ($legacy_version)}. Он может падать с KeyError: ContainerConfig."
+        else
+          say "Found old docker-compose v1${legacy_version:+ ($legacy_version)}. It can fail with KeyError: ContainerConfig."
+        fi
+        install_compose_v2_if_possible && return 0
+        if is_ru; then
+          say "WARN: не удалось поставить Compose v2 автоматически. Продолжаю через docker-compose v1 с обходом старого ContainerConfig bug."
+        else
+          say "WARN: automatic Compose v2 install failed. Continuing with docker-compose v1 and the old ContainerConfig bug workaround."
+        fi
+        return 0
+        ;;
+      *)
+        return 0
+        ;;
+    esac
+  fi
+
+  install_compose_v2_if_possible && return 0
+
+  if have apt-get; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose || true
+  fi
+
+  docker compose version >/dev/null 2>&1 || have docker-compose || die "Docker Compose is not installed."
+}
+
 install_packages() {
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -945,6 +1008,7 @@ install_packages() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose
 
   ensure_docker_available
+  ensure_compose_available
   systemctl enable --now nginx || true
   systemctl enable --now certbot.timer 2>/dev/null || true
 }
@@ -1950,16 +2014,30 @@ EOF
 }
 
 start_telemt() {
+  local cid seen found filter
   cd "$INSTALL_DIR"
+  ensure_compose_available || return 1
   compose_cmd config >/dev/null || return 1
   ensure_telemt_image_available || return 1
-  if docker inspect telemt >/dev/null 2>&1; then
+  seen=" "
+  found=0
+  for filter in "name=telemt" "label=com.docker.compose.service=telemt"; do
+    while IFS= read -r cid; do
+      [ -n "$cid" ] || continue
+      case "$seen" in
+        *" $cid "*) continue ;;
+      esac
+      seen="${seen}${cid} "
+      found=1
+      docker rm -f "$cid" >/dev/null || return 1
+    done < <(docker ps -aq --filter "$filter" 2>/dev/null || true)
+  done
+  if [ "$found" = "1" ]; then
     if is_ru; then
-      say "Удаляю старый контейнер telemt перед запуском, чтобы обойти ошибку docker-compose v1 ContainerConfig."
+      say "Удалил старый контейнер Telemt перед запуском, чтобы обойти ошибку docker-compose v1 ContainerConfig/removed image."
     else
-      say "Removing the old telemt container before start to avoid the docker-compose v1 ContainerConfig bug."
+      say "Removed the old Telemt container before start to avoid the docker-compose v1 ContainerConfig/removed-image bug."
     fi
-    docker rm -f telemt >/dev/null || return 1
   fi
   compose_cmd up -d --force-recreate
 }
@@ -2745,6 +2823,7 @@ main() {
     mark_done packages
   fi
   ensure_docker_available
+  ensure_compose_available
 
   if step_done docker_image; then
     is_ru && say "[03] Проверка Docker image (уже выполнено)" || say "[03] Check Docker image (already done)"

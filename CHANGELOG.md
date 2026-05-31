@@ -9,7 +9,7 @@
 - `RESET_INSTALL_STATE=1` is now a true clean install path: it removes saved prompts, old Telemt secret/config/compose/container/link files before asking questions, and rebuilds `telemt-local:latest` instead of reusing a stale local image.
 - nginx mask site config now uses an installer-owned file `telemt-mask-<domain>.conf`; legacy installer-generated vhosts are cleaned up when safe, while unrelated nginx site configs are left untouched.
 - Added copy-paste command blocks for fresh install, update, repair/doctor, and full reinstall to both RU and EN README sections.
-- Ubuntu package installation now tries `docker-compose-v2` before falling back to the legacy Python `docker-compose`, reducing Compose v1 `ContainerConfig` failures on Ubuntu servers.
+- Ubuntu package/startup now prefers Docker Compose v2 and tries to install it even when the old package step was already marked as done. The installer does not upgrade system Python; if only legacy Python `docker-compose` v1 is available, it removes stale Telemt containers before `compose up` to avoid `ContainerConfig`/removed-image crashes.
 
 ## 2026-05-19
 
