@@ -25,6 +25,7 @@ ASSUME_YES="${ASSUME_YES:-0}"
 UPDATE_MODE="${UPDATE_MODE:-0}"
 FIX_NGINX_MODE="${FIX_NGINX_MODE:-0}"
 NO_CACHE="${NO_CACHE:-0}"
+CLEAN_INSTALL_MODE="0"
 
 PUBLIC_IP=""
 SCRIPT_LANG_FROM_CLI="0"
@@ -87,6 +88,11 @@ usage() {
                   Секреты и сертификаты сохраняются; telemt.toml правится
                   только для совместимости, если он мешает старту.
   -h, --help      Показать эту справку.
+
+Переменные:
+  RESET_INSTALL_STATE=1
+                  Новая установка с нуля: не читать старый сохраненный ввод,
+                  удалить старый Telemt secret/config/compose/container.
 EOF
     return 0
   fi
@@ -114,6 +120,11 @@ Options:
                   users are preserved; telemt.toml is edited only for
                   compatibility when it prevents startup.
   -h, --help      Show this help.
+
+Variables:
+  RESET_INSTALL_STATE=1
+                  Fresh install: do not load old saved input; remove the old
+                  Telemt secret/config/compose/container.
 EOF
 }
 
@@ -236,7 +247,13 @@ run_fix_nginx_mode() {
     infer_update_config_from_existing_files || true
   fi
   if [ -n "${DOMAIN:-}" ]; then
-    for file in "/var/www/$DOMAIN/index.html" "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"; do
+    for file in \
+      "/var/www/$DOMAIN/index.html" \
+      "/etc/nginx/sites-available/telemt-mask-${DOMAIN}.conf" \
+      "/etc/nginx/sites-enabled/telemt-mask-${DOMAIN}.conf" \
+      "/etc/nginx/sites-available/$DOMAIN" \
+      "/etc/nginx/sites-enabled/$DOMAIN"
+    do
       if [ -e "$file" ] || [ -L "$file" ]; then
         install -d -m 0700 "$backup_dir$(dirname "$file")"
         cp -a "$file" "$backup_dir$file"
@@ -649,6 +666,116 @@ reset_resume_state_if_requested() {
   fi
 }
 
+saved_config_domain() {
+  [ -f "$SAVED_CONFIG" ] || return 1
+  (
+    set +u
+    # shellcheck disable=SC1090
+    source "$SAVED_CONFIG"
+    printf '%s\n' "${DOMAIN:-}"
+  )
+}
+
+existing_domains_for_clean_install() {
+  {
+    saved_config_domain 2>/dev/null || true
+    if [ -f "$INSTALL_DIR/telemt.toml" ]; then
+      toml_value_from_section "$INSTALL_DIR/telemt.toml" "general\\.links" "public_host" 2>/dev/null || true
+      toml_value_from_section "$INSTALL_DIR/telemt.toml" "censorship" "tls_domain" 2>/dev/null || true
+    fi
+  } | awk 'NF' | sort -u
+}
+
+safe_remove_install_dir() {
+  if [ ! -d "$INSTALL_DIR" ]; then
+    return 0
+  fi
+
+  case "$INSTALL_DIR" in
+    /|/bin|/boot|/dev|/etc|/home|/lib|/lib64|/opt|/root|/sbin|/tmp|/usr|/var)
+      say "WARN: refusing to remove suspicious INSTALL_DIR: $INSTALL_DIR"
+      return 1
+      ;;
+  esac
+
+  if [ -f "$INSTALL_DIR/docker-compose.yml" ] && grep -q 'container_name:[[:space:]]*telemt' "$INSTALL_DIR/docker-compose.yml"; then
+    rm -rf -- "$INSTALL_DIR"
+    return 0
+  fi
+
+  if [ "$INSTALL_DIR" = "/opt/telemt-docker" ]; then
+    rm -rf -- "$INSTALL_DIR"
+    return 0
+  fi
+
+  say "WARN: $INSTALL_DIR does not look like an installer-managed Telemt directory; keeping it"
+  return 1
+}
+
+clean_install_reset_if_requested() {
+  local domain backup_dir path
+
+  [ "${RESET_INSTALL_STATE:-0}" = "1" ] || return 0
+  CLEAN_INSTALL_MODE="1"
+
+  backup_dir="/root/telemt-docker-reset-nginx-backups/$(date +%Y%m%d-%H%M%S)"
+  install -d -m 0700 "$backup_dir"
+
+  if is_ru; then
+    say "RESET_INSTALL_STATE=1: новая установка с нуля. Старый сохраненный ввод, proxy secret, compose/config и контейнер Telemt будут удалены."
+    say "Чужие nginx-сайты не удаляются. Старые nginx-файлы Telemt будут удалены только если выглядят созданными этим установщиком."
+  else
+    say "RESET_INSTALL_STATE=1: clean install. Old saved input, proxy secret, compose/config, and the Telemt container will be removed."
+    say "Non-Telemt nginx sites are not removed. Old Telemt nginx files are removed only when they look installer-managed."
+  fi
+
+  if have docker && docker inspect telemt >/dev/null 2>&1; then
+    docker rm -f telemt >/dev/null 2>&1 || true
+  fi
+
+  while IFS= read -r domain; do
+    [ -n "$domain" ] || continue
+    for path in \
+      "/etc/nginx/sites-available/telemt-mask-${domain}.conf" \
+      "/etc/nginx/sites-enabled/telemt-mask-${domain}.conf" \
+      "/etc/nginx/sites-available/${domain}" \
+      "/etc/nginx/sites-enabled/${domain}"
+    do
+      if [ -e "$path" ] || [ -L "$path" ]; then
+        install -d -m 0700 "$backup_dir$(dirname "$path")"
+        cp -a "$path" "$backup_dir$path" 2>/dev/null || true
+        if remove_file_if_telemt_managed "$path"; then
+          say "removed old installer-managed nginx file: $path"
+        else
+          say "WARN: keeping non-Telemt nginx file: $path"
+        fi
+      fi
+    done
+  done < <(existing_domains_for_clean_install)
+
+  path="/etc/nginx/modules-enabled/60-telemt-stream-sni.conf"
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    install -d -m 0700 "$backup_dir$(dirname "$path")"
+    cp -a "$path" "$backup_dir$path" 2>/dev/null || true
+    rm -f "$path"
+    say "removed old installer-managed nginx stream file: $path"
+  fi
+
+  safe_remove_install_dir || true
+  rm -f "$STATE_FILE" "$SAVED_CONFIG" \
+    /root/telemt-proxy-links.txt \
+    /root/telemt-proxy-link.txt \
+    /root/telemt-active-probing-check.txt \
+    /root/telemt-acme-http01-check.txt \
+    /root/telemt-certbot-check.txt
+
+  unset TELEMT_SECRET || true
+
+  if have nginx; then
+    nginx -t >/dev/null 2>&1 && (systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true)
+  fi
+}
+
 write_file_root() {
   local path="$1"
   local mode="$2"
@@ -684,6 +811,111 @@ check_port_clean_or_nginx() {
   fi
   printf '%s\n' "$listeners"
   die "Port $port/tcp is already in use by a non-nginx process. Use a clean server or free the port first."
+}
+
+nginx_mask_site_available_path() {
+  printf '/etc/nginx/sites-available/telemt-mask-%s.conf' "$DOMAIN"
+}
+
+nginx_mask_site_enabled_path() {
+  printf '/etc/nginx/sites-enabled/telemt-mask-%s.conf' "$DOMAIN"
+}
+
+nginx_file_is_telemt_managed() {
+  local file="$1"
+  [ -f "$file" ] || return 1
+  grep -Eq 'Managed by install_docker-telemt\.sh|Telemt Docker installer|telemt_backend|127\.0\.0\.1:8443|127\.0\.0\.1:1443' "$file"
+}
+
+nginx_file_has_server_name() {
+  local file="$1"
+  local domain="$2"
+  [ -f "$file" ] || return 1
+  awk -v domain="$domain" '
+    {
+      line=$0
+      sub(/#.*/, "", line)
+      gsub(/;/, " ", line)
+      n=split(line, fields, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) {
+        if (fields[i] == "server_name") {
+          for (j = i + 1; j <= n; j++) {
+            if (fields[j] == domain) {
+              found=1
+            }
+          }
+        }
+      }
+    }
+    END { exit found ? 0 : 1 }
+  ' "$file"
+}
+
+remove_file_if_telemt_managed() {
+  local file="$1"
+  local target=""
+
+  if [ -L "$file" ]; then
+    target="$(readlink -f "$file" 2>/dev/null || true)"
+    if [ -z "$target" ] || nginx_file_is_telemt_managed "$target"; then
+      rm -f "$file"
+      return 0
+    fi
+    return 1
+  fi
+
+  if nginx_file_is_telemt_managed "$file"; then
+    rm -f "$file"
+    return 0
+  fi
+
+  return 1
+}
+
+remove_legacy_nginx_domain_config_if_safe() {
+  local domain="$1"
+  local path
+
+  for path in "/etc/nginx/sites-enabled/$domain" "/etc/nginx/sites-available/$domain"; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      if remove_file_if_telemt_managed "$path"; then
+        say "removed old installer-managed nginx file: $path"
+      else
+        say "WARN: keeping non-Telemt nginx file: $path"
+      fi
+    fi
+  done
+}
+
+ensure_nginx_domain_not_owned_elsewhere() {
+  local file target legacy_available legacy_enabled
+  target="$(nginx_mask_site_available_path)"
+  legacy_available="/etc/nginx/sites-available/$DOMAIN"
+  legacy_enabled="/etc/nginx/sites-enabled/$DOMAIN"
+
+  if [ -e "$target" ] && ! nginx_file_is_telemt_managed "$target"; then
+    if is_ru; then
+      die "Файл $target уже существует и не похож на конфиг Telemt. Установщик не будет его перезаписывать."
+    else
+      die "$target already exists and does not look like a Telemt config. The installer will not overwrite it."
+    fi
+  fi
+
+  remove_legacy_nginx_domain_config_if_safe "$DOMAIN"
+
+  while IFS= read -r -d '' file; do
+    [ -f "$file" ] || continue
+    [ "$file" = "$target" ] && continue
+    [ "$file" = "$legacy_available" ] && continue
+    [ "$file" = "$legacy_enabled" ] && continue
+    if nginx_file_has_server_name "$file" "$DOMAIN" && ! nginx_file_is_telemt_managed "$file"; then
+      if is_ru; then
+        die "Домен $DOMAIN уже описан в чужом nginx-конфиге: $file. Установщик не будет его перезаписывать."
+      else
+        die "Domain $DOMAIN is already configured in a non-Telemt nginx file: $file. The installer will not overwrite it."
+      fi
+    fi
+  done < <(find /etc/nginx -type f \( -name '*.conf' -o -path '/etc/nginx/sites-available/*' -o -path '/etc/nginx/sites-enabled/*' \) -print0 2>/dev/null)
 }
 
 compose_cmd() {
@@ -835,7 +1067,18 @@ refresh_docker_image_for_update() {
 }
 
 check_docker_image() {
+  local old_no_cache
   say "Checking Docker image: $TELEMT_IMAGE"
+  if [ "$CLEAN_INSTALL_MODE" = "1" ] && [[ "$TELEMT_IMAGE" == telemt-local:latest ]]; then
+    say "Clean install requested: rebuilding telemt-local:latest instead of reusing the old local image."
+    old_no_cache="$NO_CACHE"
+    NO_CACHE=1
+    build_local_image
+    NO_CACHE="$old_no_cache"
+    docker image inspect "$TELEMT_IMAGE" >/dev/null 2>&1 && return 0
+    die "Image build finished, but Docker cannot inspect $TELEMT_IMAGE."
+  fi
+
   if docker image inspect "$TELEMT_IMAGE" >/dev/null 2>&1; then
     say "Docker image exists locally."
     return 0
@@ -1185,9 +1428,10 @@ EOF
 }
 
 write_mask_site_http_only() {
+  ensure_nginx_domain_not_owned_elsewhere
   write_mask_site_index
-  rm -f /etc/nginx/sites-enabled/default
-  write_file_root "/etc/nginx/sites-available/$DOMAIN" 0644 root:root <<EOF
+  write_file_root "$(nginx_mask_site_available_path)" 0644 root:root <<EOF
+# Managed by install_docker-telemt.sh. Do not edit manually.
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -1205,7 +1449,7 @@ server {
     }
 }
 EOF
-  ln -sfn "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
+  ln -sfn "$(nginx_mask_site_available_path)" "$(nginx_mask_site_enabled_path)"
   nginx -t
   systemctl reload nginx || systemctl restart nginx
 }
@@ -1281,11 +1525,11 @@ append_acme_diagnostics() {
       systemctl is-active nginx 2>/dev/null | sed 's/^/nginx_active=/' || true
     fi
     nginx -t 2>&1 || true
-    if [ -f "/etc/nginx/sites-available/${DOMAIN}" ]; then
-      printf 'site_config=/etc/nginx/sites-available/%s\n' "$DOMAIN"
-      grep -nE 'listen 80|server_name|well-known|root|return 301' "/etc/nginx/sites-available/${DOMAIN}" 2>/dev/null || true
+    if [ -f "$(nginx_mask_site_available_path)" ]; then
+      printf 'site_config=%s\n' "$(nginx_mask_site_available_path)"
+      grep -nE 'listen 80|server_name|well-known|root|return 301' "$(nginx_mask_site_available_path)" 2>/dev/null || true
     else
-      printf 'site_config=/etc/nginx/sites-available/%s missing\n' "$DOMAIN"
+      printf 'site_config=%s missing\n' "$(nginx_mask_site_available_path)"
     fi
 
     printf '\n[firewall]\n'
@@ -1441,8 +1685,9 @@ write_nginx_mask_site_config() {
     access_log_line="access_log /var/log/nginx/${DOMAIN}.access.log;"
   fi
 
-  rm -f /etc/nginx/sites-enabled/default
-  write_file_root "/etc/nginx/sites-available/$DOMAIN" 0644 root:root <<EOF
+  ensure_nginx_domain_not_owned_elsewhere
+  write_file_root "$(nginx_mask_site_available_path)" 0644 root:root <<EOF
+# Managed by install_docker-telemt.sh. Do not edit manually.
 server {
     listen 80;
     server_name ${DOMAIN};
@@ -1480,13 +1725,14 @@ server {
     }
 }
 EOF
-  ln -sfn "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
+  ln -sfn "$(nginx_mask_site_available_path)" "$(nginx_mask_site_enabled_path)"
 }
 
 write_nginx_full_config() {
   write_nginx_mask_site_config
 
   write_file_root /etc/nginx/modules-enabled/60-telemt-stream-sni.conf 0644 root:root <<EOF
+# Managed by install_docker-telemt.sh. Do not edit manually.
 stream {
     map \$ssl_preread_server_name \$telemt_backend {
         ${DOMAIN} 127.0.0.1:1443;
@@ -2266,6 +2512,8 @@ backup_update_state() {
     "$INSTALL_DIR/docker-compose.yml" \
     "$SECRET_FILE" \
     "$SAVED_CONFIG" \
+    "$(nginx_mask_site_available_path)" \
+    "$(nginx_mask_site_enabled_path)" \
     "/etc/nginx/sites-available/$DOMAIN" \
     "/etc/nginx/sites-enabled/$DOMAIN" \
     /etc/nginx/modules-enabled/60-telemt-stream-sni.conf \
@@ -2411,19 +2659,33 @@ main() {
   parse_args "$@"
   need_root
   local requested_script_lang="$SCRIPT_LANG"
-  load_config_if_exists
-  if [ "$SCRIPT_LANG_FROM_CLI" = "1" ]; then
-    SCRIPT_LANG="$requested_script_lang"
-  fi
-  reset_resume_state_if_requested
   if [ "$UPDATE_MODE" = "1" ]; then
+    load_config_if_exists
+    if [ "$SCRIPT_LANG_FROM_CLI" = "1" ]; then
+      SCRIPT_LANG="$requested_script_lang"
+    fi
     run_update_mode
     exit 0
   fi
   if [ "$FIX_NGINX_MODE" = "1" ]; then
+    load_config_if_exists
+    if [ "$SCRIPT_LANG_FROM_CLI" = "1" ]; then
+      SCRIPT_LANG="$requested_script_lang"
+    fi
     run_fix_nginx_mode
     exit 0
   fi
+
+  if [ "${RESET_INSTALL_STATE:-0}" = "1" ]; then
+    clean_install_reset_if_requested
+  else
+    load_config_if_exists
+    if [ "$SCRIPT_LANG_FROM_CLI" = "1" ]; then
+      SCRIPT_LANG="$requested_script_lang"
+    fi
+    reset_resume_state_if_requested
+  fi
+
   guard_against_accidental_reinstall
   interactive_inputs
   normalize_domain_input
