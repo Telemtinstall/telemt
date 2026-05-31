@@ -157,7 +157,7 @@ chmod +x ./install_docker-telemt.sh
 ./install_docker-telemt.sh --fix-nginx -lang ru
 ```
 
-Этот режим делает бэкап измененных nginx-файлов, удаляет несовместимые строки `http2 on;` и `listen ... http2;`, а при дублирующихся top-level `stream {}` блоках оставляет основной Telemt stream config и отключает лишние stream-файлы. Затем запускает `nginx -t` и reload. После этого он проверяет Docker/Compose, запускает существующий контейнер через `docker start telemt` без recreate, проверяет наличие `telemt.toml`, локальный API, `certbot.timer` и слушающие порты. Telemt-секреты, пользователи, сертификаты и содержимое `telemt.toml` не переписываются.
+Этот режим делает бэкап измененных nginx-файлов, удаляет несовместимые строки `http2 on;` и `listen ... http2;`, а при дублирующихся top-level `stream {}` блоках оставляет основной Telemt stream config и отключает лишние stream-файлы. Затем запускает `nginx -t` и reload. После этого он проверяет Docker/Compose, запускает существующий контейнер через `docker start telemt` без recreate, а если контейнера нет и локальный image `telemt-local:*` пропал, пересобирает его через `build.sh`. Потом проверяет наличие `telemt.toml`, локальный API, `certbot.timer` и слушающие порты. Telemt-секреты, пользователи, сертификаты и содержимое `telemt.toml` не переписываются.
 
 Обновить уже установленный сервер без перезаписи текущих настроек:
 
@@ -424,7 +424,7 @@ Emergency nginx repair after `unknown directive "http2"`:
 ./install_docker-telemt.sh --fix-nginx -lang ru
 ```
 
-This mode backs up changed nginx files, removes incompatible `http2 on;` and `listen ... http2;` syntax, and when duplicate top-level `stream {}` blocks are present it keeps the primary Telemt stream config and disables extra stream files. Then it runs `nginx -t` and reloads nginx. After that it checks Docker/Compose, starts the existing container through `docker start telemt` without recreate, verifies `telemt.toml`, the local API, `certbot.timer`, and listening ports. Telemt secrets, users, certificates, and `telemt.toml` contents are not rewritten.
+This mode backs up changed nginx files, removes incompatible `http2 on;` and `listen ... http2;` syntax, and when duplicate top-level `stream {}` blocks are present it keeps the primary Telemt stream config and disables extra stream files. Then it runs `nginx -t` and reloads nginx. After that it checks Docker/Compose, starts the existing container through `docker start telemt` without recreate, and if the container is missing while local image `telemt-local:*` is gone, rebuilds it through `build.sh`. Then it verifies `telemt.toml`, the local API, `certbot.timer`, and listening ports. Telemt secrets, users, certificates, and `telemt.toml` contents are not rewritten.
 
 Update an already installed server without rewriting current settings:
 

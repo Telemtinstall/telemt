@@ -163,7 +163,7 @@ need_root() {
 }
 
 run_fix_nginx_mode() {
-  local backup_dir changed file doctor_failed canonical_stream keep_stream
+  local backup_dir changed file doctor_failed canonical_stream keep_stream script_dir build_script
   local -a stream_files
   doctor_failed=0
   have nginx || die "nginx is not installed."
@@ -280,11 +280,36 @@ run_fix_nginx_mode() {
           say "WARN: docker start telemt failed"
           doctor_failed=1
         fi
-      elif (cd "$INSTALL_DIR" && COMPOSE_INTERACTIVE_NO_CLI=1 compose_cmd up -d --no-recreate >/dev/null); then
-        say "OK: Telemt container created and started"
       else
-        say "WARN: docker compose up -d --no-recreate failed in $INSTALL_DIR"
-        doctor_failed=1
+        TELEMT_IMAGE="$(compose_image_from_file "$INSTALL_DIR/docker-compose.yml" || printf '%s' "$TELEMT_IMAGE")"
+        if ! docker image inspect "$TELEMT_IMAGE" >/dev/null 2>&1; then
+          if [[ "$TELEMT_IMAGE" == telemt-local:* ]]; then
+            script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+            build_script="${BUILD_SCRIPT:-$script_dir/build.sh}"
+            if [ ! -f "$build_script" ]; then
+              say "WARN: missing local image $TELEMT_IMAGE and build.sh was not found near installer"
+              doctor_failed=1
+            elif build_local_image; then
+              say "OK: rebuilt missing local image $TELEMT_IMAGE"
+            else
+              say "WARN: failed to rebuild missing local image $TELEMT_IMAGE"
+              doctor_failed=1
+            fi
+          else
+            if docker pull "$TELEMT_IMAGE"; then
+              say "OK: pulled missing image $TELEMT_IMAGE"
+            else
+              say "WARN: failed to pull missing image $TELEMT_IMAGE"
+              doctor_failed=1
+            fi
+          fi
+        fi
+        if [ "$doctor_failed" = "0" ] && (cd "$INSTALL_DIR" && COMPOSE_INTERACTIVE_NO_CLI=1 compose_cmd up -d --no-recreate >/dev/null); then
+          say "OK: Telemt container created and started"
+        else
+          say "WARN: docker compose up -d --no-recreate failed in $INSTALL_DIR"
+          doctor_failed=1
+        fi
       fi
     else
       say "WARN: docker compose config failed in $INSTALL_DIR"
