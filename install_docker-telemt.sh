@@ -23,6 +23,7 @@ MASK_SITE_MODE="${MASK_SITE_MODE:-fancy}"
 SCRIPT_LANG="${SCRIPT_LANG:-en}"
 ASSUME_YES="${ASSUME_YES:-0}"
 UPDATE_MODE="${UPDATE_MODE:-0}"
+FIX_NGINX_MODE="${FIX_NGINX_MODE:-0}"
 NO_CACHE="${NO_CACHE:-0}"
 
 PUBLIC_IP=""
@@ -65,13 +66,14 @@ usage() {
   if is_ru; then
     cat <<'EOF'
 Использование:
-  ./install_docker-telemt.sh [-lang ru|en] [--update]
+  ./install_docker-telemt.sh [-lang ru|en] [--update] [--fix-nginx]
 
 Примеры:
   ./install_docker-telemt.sh
   ./install_docker-telemt.sh -lang ru
   ./install_docker-telemt.sh --lang en
   ./install_docker-telemt.sh --update -lang ru
+  ./install_docker-telemt.sh --fix-nginx -lang ru
 
 Опции:
   -lang, --lang   Язык интерфейса установщика: en или ru.
@@ -79,6 +81,10 @@ usage() {
                   Обновить Docker image Telemt и перезапустить контейнер,
                   сохранив существующие telemt.toml, docker-compose.yml,
                   секреты, ссылки и nginx-конфиги.
+  -fix, --fix-nginx
+                  Аварийно починить nginx после ошибки
+                  unknown directive "http2". Telemt, Docker, секреты
+                  и сертификаты не трогаются.
   -h, --help      Показать эту справку.
 EOF
     return 0
@@ -86,13 +92,14 @@ EOF
 
   cat <<'EOF'
 Usage:
-  ./install_docker-telemt.sh [-lang ru|en] [--update]
+  ./install_docker-telemt.sh [-lang ru|en] [--update] [--fix-nginx]
 
 Examples:
   ./install_docker-telemt.sh
   ./install_docker-telemt.sh -lang ru
   ./install_docker-telemt.sh --lang en
   ./install_docker-telemt.sh --update -lang ru
+  ./install_docker-telemt.sh --fix-nginx -lang ru
 
 Options:
   -lang, --lang   Installer interface language: en or ru.
@@ -100,6 +107,9 @@ Options:
                   Update the Telemt Docker image and recreate the container
                   while preserving existing telemt.toml, docker-compose.yml,
                   secrets, links, and nginx configs.
+  -fix, --fix-nginx
+                  Emergency nginx repair for unknown directive "http2".
+                  Telemt, Docker, secrets, and certificates are not touched.
   -h, --help      Show this help.
 EOF
 }
@@ -127,6 +137,9 @@ parse_args() {
       -update|--update|update)
         UPDATE_MODE="1"
         ;;
+      -fix|--fix|--fix-nginx|--fix-http2|fix)
+        FIX_NGINX_MODE="1"
+        ;;
       *)
         die "Unknown argument: $1"
         ;;
@@ -145,6 +158,66 @@ need_root() {
       die "Запустите от root."
     else
       die "Run as root."
+    fi
+  fi
+}
+
+run_fix_nginx_mode() {
+  local backup_dir changed file
+  have nginx || die "nginx is not installed."
+  backup_dir="/root/telemt-docker-nginx-fix-backups/$(date +%Y%m%d-%H%M%S)"
+  install -d -m 0700 "$backup_dir"
+
+  if is_ru; then
+    say "Режим fix: чиню только nginx-конфиги. Telemt, Docker, секреты и сертификаты не трогаю."
+    say "Бэкап измененных файлов: $backup_dir"
+  else
+    say "Fix mode: repairing nginx configs only. Telemt, Docker, secrets, and certificates are not touched."
+    say "Changed-file backup: $backup_dir"
+  fi
+
+  say
+  say "nginx -t before fix:"
+  nginx -t 2>&1 || true
+
+  changed=0
+  while IFS= read -r -d '' file; do
+    [ -f "$file" ] || continue
+    if grep -Eq '^[[:space:]]*http2[[:space:]]+on[[:space:]]*;|^[[:space:]]*listen[[:space:]][^;]*[[:space:]]http2([[:space:]]|;)' "$file"; then
+      install -d -m 0700 "$backup_dir$(dirname "$file")"
+      cp -a "$file" "$backup_dir$file"
+      sed -i \
+        -e '/^[[:space:]]*http2[[:space:]][[:space:]]*on[[:space:]]*;/d' \
+        -e 's/[[:space:]]http2[[:space:]]*;/;/' \
+        -e 's/[[:space:]]http2[[:space:]][[:space:]]*/ /g' \
+        "$file"
+      say "fixed: $file"
+      changed=1
+    fi
+  done < <(find /etc/nginx -type f \( -name '*.conf' -o -path '/etc/nginx/sites-available/*' -o -path '/etc/nginx/sites-enabled/*' -o -path '/etc/nginx/modules-enabled/*' \) -print0 2>/dev/null)
+
+  if [ "$changed" = "0" ]; then
+    if is_ru; then
+      say "Несовместимых директив http2 не найдено."
+    else
+      say "No incompatible http2 directives were found."
+    fi
+  fi
+
+  say
+  say "nginx -t after fix:"
+  if nginx -t; then
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+    if is_ru; then
+      say "Готово: nginx config валиден."
+    else
+      say "Done: nginx config is valid."
+    fi
+  else
+    if is_ru; then
+      die "nginx все еще не проходит проверку. Смотри ошибку выше. Бэкап измененных файлов: $backup_dir"
+    else
+      die "nginx still fails validation. See the error above. Changed-file backup: $backup_dir"
     fi
   fi
 }
@@ -1257,7 +1330,7 @@ server {
 }
 
 server {
-    listen 127.0.0.1:8443 ssl http2;
+    listen 127.0.0.1:8443 ssl;
     server_name ${DOMAIN};
     ${access_log_line}
     error_log /var/log/nginx/${DOMAIN}.error.log crit;
@@ -2124,6 +2197,10 @@ main() {
   fi
   if [ "$UPDATE_MODE" = "1" ]; then
     run_update_mode
+    exit 0
+  fi
+  if [ "$FIX_NGINX_MODE" = "1" ]; then
+    run_fix_nginx_mode
     exit 0
   fi
   interactive_inputs

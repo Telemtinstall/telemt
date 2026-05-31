@@ -132,6 +132,8 @@ docker run --rm --entrypoint /app/telemt telemt-local:latest --version
 
 В этой схеме обычный сканер или браузер без MTProxy-ключа получает HTTPS-сайт-заглушку с настоящим сертификатом вашего домена. Telemt не подменяет TLS и не делает MITM: он оставляет валидных MTProxy-клиентов внутри Telemt, а остальные TLS-соединения передаёт на mask site как TCP-поток.
 
+Заглушка намеренно настраивается как обычный HTTPS без отдельной директивы `http2`. Это совместимо с nginx 1.24 и старыми пакетами Debian/Ubuntu, где строка `http2 on;` вызывает ошибку `unknown directive "http2"`. Для маскировочного сайта HTTP/2 не нужен.
+
 Перед запуском нужен чистый Debian/Ubuntu сервер, A-запись домена на IPv4 сервера и свободные `80/tcp`, `443/tcp`.
 
 На этапе сертификата установщик сначала проверяет HTTP-01 challenge без участия Let's Encrypt: создает временный файл в `/var/www/<domain>/.well-known/acme-challenge/`, проверяет его локально через nginx и затем через публичный IPv4 командой `curl -4 --resolve <domain>:80:<server_ipv4>`. Если файл не отдается, скрипт останавливается до `certbot` и пишет диагностику в `/root/telemt-acme-http01-check.txt`: DNS A/AAAA, слушающие порты, `nginx -t`, site config и firewall. Это помогает сразу увидеть закрытый `80/tcp`, неправильную A-запись, лишнюю AAAA-запись или CDN/proxy, который не пропускает `/.well-known/acme-challenge/`.
@@ -148,6 +150,14 @@ chmod +x ./install_docker-telemt.sh
 ```bash
 ./install_docker-telemt.sh -lang ru
 ```
+
+Аварийный ремонт nginx после ошибки `unknown directive "http2"`:
+
+```bash
+./install_docker-telemt.sh --fix-nginx -lang ru
+```
+
+Этот режим чинит только nginx-конфиги: делает бэкап измененных файлов, удаляет несовместимые строки `http2 on;` и `listen ... http2;`, затем запускает `nginx -t` и reload. Telemt-секреты, пользователи, Docker, сертификаты и `telemt.toml` не трогаются.
 
 Обновить уже установленный сервер без перезаписи текущих настроек:
 
@@ -389,6 +399,8 @@ docker run --rm --entrypoint /app/telemt telemt-local:latest --version
 
 In this architecture, a normal scanner or browser without the MTProxy key receives the HTTPS mask site with a real certificate for your domain. Telemt does not replace TLS and does not perform MITM: valid MTProxy clients stay inside Telemt, while other TLS connections are relayed to the mask site as a TCP stream.
 
+The mask site is intentionally configured as regular HTTPS without a separate `http2` directive. This stays compatible with nginx 1.24 and older Debian/Ubuntu packages where `http2 on;` fails with `unknown directive "http2"`. HTTP/2 is not needed for the camouflage site.
+
 Before running, use a clean Debian/Ubuntu server, create a DNS A record pointing to the server IPv4, and keep `80/tcp` and `443/tcp` free.
 
 During the certificate step, the installer first checks the HTTP-01 challenge without involving Let's Encrypt: it creates a temporary file under `/var/www/<domain>/.well-known/acme-challenge/`, checks it locally through nginx, and then checks it through the public IPv4 with `curl -4 --resolve <domain>:80:<server_ipv4>`. If the file is not reachable, the script stops before `certbot` and writes diagnostics to `/root/telemt-acme-http01-check.txt`: DNS A/AAAA, listening ports, `nginx -t`, site config, and firewall state. This usually points directly to a closed `80/tcp`, a wrong A record, an unwanted AAAA record, or a CDN/proxy that does not pass `/.well-known/acme-challenge/`.
@@ -405,6 +417,14 @@ Russian installer UI:
 ```bash
 ./install_docker-telemt.sh -lang ru
 ```
+
+Emergency nginx repair after `unknown directive "http2"`:
+
+```bash
+./install_docker-telemt.sh --fix-nginx -lang ru
+```
+
+This mode repairs only nginx configs: backs up changed files, removes incompatible `http2 on;` and `listen ... http2;` syntax, then runs `nginx -t` and reloads nginx. Telemt secrets, users, Docker, certificates, and `telemt.toml` are not touched.
 
 Update an already installed server without rewriting current settings:
 

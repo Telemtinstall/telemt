@@ -4,6 +4,8 @@
 
 ### Changed
 
+- Removed HTTP/2 from the generated nginx mask-site listener for compatibility with nginx 1.24 and older distribution builds. The mask site only needs plain HTTPS, while Telemt traffic still goes through the nginx stream SNI router.
+- Added `--fix-nginx` / `-fix` emergency mode. It backs up changed nginx files, removes only incompatible `http2` directives, runs `nginx -t`, and reloads nginx without touching Telemt secrets, Docker, certificates, users, or `telemt.toml`.
 - Improved the final active probing check in the Docker installer:
   - forces IPv4 with `openssl s_client -4` and `curl -4`;
   - stores the full result in `/root/telemt-active-probing-check.txt`;

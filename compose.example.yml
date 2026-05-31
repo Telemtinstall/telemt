@@ -4,7 +4,6 @@ services:
     container_name: telemt
     restart: unless-stopped
     network_mode: host
-    user: "65532:65532"
     environment:
       RUST_LOG: "warn"
     volumes:
@@ -23,9 +22,12 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=16m
+    pids_limit: 256
+    mem_limit: 256m
+    cpus: "0.50"
     logging:
       driver: "none"
     ulimits:
       nofile:
-        soft: 65535
-        hard: 65535
+        soft: 65536
+        hard: 262144
