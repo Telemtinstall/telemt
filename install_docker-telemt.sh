@@ -239,8 +239,14 @@ run_fix_nginx_mode() {
         cp -a "$file" "$backup_dir$file"
       fi
     done
-    write_mask_site_http_only
-    say "refreshed mask site placeholder: /var/www/$DOMAIN/index.html"
+    write_mask_site_index
+    if [ -f "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem" ] && [ -f "/etc/letsencrypt/live/${DOMAIN}/privkey.pem" ]; then
+      write_nginx_mask_site_config
+      say "refreshed mask site placeholder and local HTTPS mask server: /var/www/$DOMAIN/index.html"
+    else
+      say "refreshed mask site placeholder only: /var/www/$DOMAIN/index.html"
+      say "WARN: Let's Encrypt certificate was not found; local HTTPS mask server config was not rewritten"
+    fi
     changed=1
   else
     say "WARN: cannot refresh mask site placeholder: domain was not detected"
@@ -1016,7 +1022,7 @@ telemt_version_supports_exclusive_mask() {
   (( patch >= 12 ))
 }
 
-write_mask_site_http_only() {
+write_mask_site_index() {
   local install_started_at
   install_started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 
@@ -1188,7 +1194,10 @@ write_mask_site_http_only() {
 EOF
   fi
   chmod 0644 "/var/www/$DOMAIN/index.html"
+}
 
+write_mask_site_http_only() {
+  write_mask_site_index
   rm -f /etc/nginx/sites-enabled/default
   write_file_root "/etc/nginx/sites-available/$DOMAIN" 0644 root:root <<EOF
 server {
@@ -1438,12 +1447,13 @@ issue_certificate() {
   systemctl enable --now certbot.timer 2>/dev/null || true
 }
 
-write_nginx_full_config() {
+write_nginx_mask_site_config() {
   local access_log_line="access_log off;"
   if [ "$ENABLE_LOGS" = "yes" ]; then
     access_log_line="access_log /var/log/nginx/${DOMAIN}.access.log;"
   fi
 
+  rm -f /etc/nginx/sites-enabled/default
   write_file_root "/etc/nginx/sites-available/$DOMAIN" 0644 root:root <<EOF
 server {
     listen 80;
@@ -1482,6 +1492,11 @@ server {
     }
 }
 EOF
+  ln -sfn "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"
+}
+
+write_nginx_full_config() {
+  write_nginx_mask_site_config
 
   write_file_root /etc/nginx/modules-enabled/60-telemt-stream-sni.conf 0644 root:root <<EOF
 stream {
