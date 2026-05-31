@@ -229,6 +229,23 @@ run_fix_nginx_mode() {
     done
   fi
 
+  if [ -z "${DOMAIN:-}" ]; then
+    infer_update_config_from_existing_files || true
+  fi
+  if [ -n "${DOMAIN:-}" ]; then
+    for file in "/var/www/$DOMAIN/index.html" "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/$DOMAIN"; do
+      if [ -e "$file" ] || [ -L "$file" ]; then
+        install -d -m 0700 "$backup_dir$(dirname "$file")"
+        cp -a "$file" "$backup_dir$file"
+      fi
+    done
+    write_mask_site_http_only
+    say "refreshed mask site placeholder: /var/www/$DOMAIN/index.html"
+    changed=1
+  else
+    say "WARN: cannot refresh mask site placeholder: domain was not detected"
+  fi
+
   if [ "$changed" = "0" ]; then
     if is_ru; then
       say "Несовместимых директив http2 не найдено."
