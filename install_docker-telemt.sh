@@ -647,6 +647,16 @@ mark_done() {
   grep -Fxq "$1" "$STATE_FILE" 2>/dev/null || printf '%s\n' "$1" >> "$STATE_FILE"
 }
 
+reset_resume_state_if_requested() {
+  [ "${RESET_INSTALL_STATE:-0}" = "1" ] || return 0
+  rm -f "$STATE_FILE"
+  if is_ru; then
+    say "RESET_INSTALL_STATE=1: состояние resume сброшено, все шаги установки будут выполнены заново."
+  else
+    say "RESET_INSTALL_STATE=1: resume state was cleared, all install steps will run again."
+  fi
+}
+
 write_file_root() {
   local path="$1"
   local mode="$2"
@@ -1660,6 +1670,14 @@ EOF
 start_telemt() {
   cd "$INSTALL_DIR"
   compose_cmd config >/dev/null
+  if docker inspect telemt >/dev/null 2>&1; then
+    if is_ru; then
+      say "Удаляю старый контейнер telemt перед запуском, чтобы обойти ошибку docker-compose v1 ContainerConfig."
+    else
+      say "Removing the old telemt container before start to avoid the docker-compose v1 ContainerConfig bug."
+    fi
+    docker rm -f telemt >/dev/null
+  fi
   compose_cmd up -d --force-recreate
 }
 
@@ -2366,6 +2384,7 @@ main() {
   if [ "$SCRIPT_LANG_FROM_CLI" = "1" ]; then
     SCRIPT_LANG="$requested_script_lang"
   fi
+  reset_resume_state_if_requested
   if [ "$UPDATE_MODE" = "1" ]; then
     run_update_mode
     exit 0
