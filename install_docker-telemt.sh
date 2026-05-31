@@ -1052,13 +1052,6 @@ write_mask_site_http_only() {
       letter-spacing: 0;
       text-transform: uppercase;
     }
-    p {
-      color: var(--muted);
-      line-height: 1.7;
-      max-width: 680px;
-      margin: 0;
-      font-size: 18px;
-    }
     .timer-label {
       margin: 34px 0 14px;
       color: var(--muted);
@@ -1119,35 +1112,6 @@ write_mask_site_http_only() {
         linear-gradient(rgba(255,255,255,.22), rgba(255,255,255,.22)) 24px 24px / 118px 10px no-repeat,
         linear-gradient(rgba(255,255,255,.22), rgba(255,255,255,.22)) 24px 52px / 118px 10px no-repeat;
     }
-    .contact {
-      border-top: 1px solid var(--line);
-      padding-top: 26px;
-      color: var(--muted);
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 12px;
-    }
-    .telemt-button {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 40px;
-      padding: 0 18px;
-      border: 1px solid rgba(143,211,255,.5);
-      border-radius: 8px;
-      background: rgba(143,211,255,.12);
-      color: var(--text);
-      text-decoration: none;
-      font-weight: 700;
-      letter-spacing: .03em;
-      text-transform: lowercase;
-      transition: background .2s ease, border-color .2s ease;
-    }
-    .telemt-button:hover {
-      background: rgba(143,211,255,.2);
-      border-color: var(--accent);
-    }
     @keyframes spin { to { transform: rotate(360deg); } }
     @media (max-width: 760px) {
       main { gap: 34px; }
@@ -1163,7 +1127,6 @@ write_mask_site_http_only() {
     <section class="hero" aria-label="Статус сайта">
       <div>
         <h1>Сайт уже работает</h1>
-        <p>Страница держит свет включенным, пока система спокойно занимается своими делами.</p>
         <div class="timer-label">Работает с момента установки:</div>
         <div class="timer" aria-live="polite">
           <div><span class="num" id="days">0</span><span class="unit">дней</span></div>
@@ -1173,10 +1136,6 @@ write_mask_site_http_only() {
         </div>
       </div>
       <div class="machine" aria-hidden="true"></div>
-    </section>
-    <section class="contact">
-      <span>Связаться с нами можно в</span>
-      <a class="telemt-button" href="https://github.com/Telemtinstall/telemt">telemt</a>
     </section>
   </main>
   <script>
