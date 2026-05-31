@@ -941,6 +941,7 @@ install_packages() {
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnginx-mod-stream || true
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-cli docker-buildx || true
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-plugin || \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-v2 || \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose
 
   ensure_docker_available
