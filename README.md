@@ -157,7 +157,7 @@ chmod +x ./install_docker-telemt.sh
 ./install_docker-telemt.sh --fix-nginx -lang ru
 ```
 
-Этот режим чинит только nginx-конфиги: делает бэкап измененных файлов, удаляет несовместимые строки `http2 on;` и `listen ... http2;`, затем запускает `nginx -t` и reload. Telemt-секреты, пользователи, Docker, сертификаты и `telemt.toml` не трогаются.
+Этот режим делает бэкап измененных nginx-файлов, удаляет несовместимые строки `http2 on;` и `listen ... http2;`, затем запускает `nginx -t` и reload. После этого он проверяет Docker/Compose, запускает или выравнивает Telemt-контейнер, проверяет наличие `telemt.toml`, локальный API, `certbot.timer` и слушающие порты. Telemt-секреты, пользователи, сертификаты и содержимое `telemt.toml` не переписываются.
 
 Обновить уже установленный сервер без перезаписи текущих настроек:
 
@@ -424,7 +424,7 @@ Emergency nginx repair after `unknown directive "http2"`:
 ./install_docker-telemt.sh --fix-nginx -lang ru
 ```
 
-This mode repairs only nginx configs: backs up changed files, removes incompatible `http2 on;` and `listen ... http2;` syntax, then runs `nginx -t` and reloads nginx. Telemt secrets, users, Docker, certificates, and `telemt.toml` are not touched.
+This mode backs up changed nginx files, removes incompatible `http2 on;` and `listen ... http2;` syntax, then runs `nginx -t` and reloads nginx. After that it checks Docker/Compose, starts or reconciles the Telemt container, verifies `telemt.toml`, the local API, `certbot.timer`, and listening ports. Telemt secrets, users, certificates, and `telemt.toml` contents are not rewritten.
 
 Update an already installed server without rewriting current settings:
 
