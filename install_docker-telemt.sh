@@ -83,8 +83,8 @@ usage() {
                   секреты, ссылки и nginx-конфиги.
   -fix, --fix-nginx
                   Аварийно починить nginx после ошибки
-                  unknown directive "http2". Telemt, Docker, секреты
-                  и сертификаты не трогаются.
+                  unknown directive "http2" и выполнить Docker doctor.
+                  Секреты, сертификаты и telemt.toml сохраняются.
   -h, --help      Показать эту справку.
 EOF
     return 0
@@ -108,8 +108,9 @@ Options:
                   while preserving existing telemt.toml, docker-compose.yml,
                   secrets, links, and nginx configs.
   -fix, --fix-nginx
-                  Emergency nginx repair for unknown directive "http2".
-                  Telemt, Docker, secrets, and certificates are not touched.
+                  Emergency nginx repair for unknown directive "http2"
+                  and Docker doctor checks. Secrets, certificates, and
+                  telemt.toml are preserved.
   -h, --help      Show this help.
 EOF
 }
@@ -163,7 +164,7 @@ need_root() {
 }
 
 run_fix_nginx_mode() {
-  local backup_dir changed file doctor_failed canonical_stream keep_stream script_dir build_script
+  local backup_dir changed file doctor_failed canonical_stream keep_stream
   local -a stream_files
   doctor_failed=0
   have nginx || die "nginx is not installed."
@@ -171,10 +172,10 @@ run_fix_nginx_mode() {
   install -d -m 0700 "$backup_dir"
 
   if is_ru; then
-    say "Режим fix: чиню только nginx-конфиги. Telemt, Docker, секреты и сертификаты не трогаю."
+    say "Режим fix: чиню nginx-конфиги и проверяю Docker/Telemt. Секреты, сертификаты и telemt.toml не перезаписываю."
     say "Бэкап измененных файлов: $backup_dir"
   else
-    say "Fix mode: repairing nginx configs only. Telemt, Docker, secrets, and certificates are not touched."
+    say "Fix mode: repairing nginx configs and checking Docker/Telemt. Secrets, certificates, and telemt.toml are not rewritten."
     say "Changed-file backup: $backup_dir"
   fi
 
@@ -311,43 +312,11 @@ run_fix_nginx_mode() {
   if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
     if (cd "$INSTALL_DIR" && compose_cmd config >/dev/null); then
       say "OK: docker compose config"
-      if docker inspect telemt >/dev/null 2>&1; then
-        if docker start telemt >/dev/null 2>&1; then
-          say "OK: existing Telemt container started"
-        else
-          say "WARN: docker start telemt failed"
-          doctor_failed=1
-        fi
+      if start_telemt; then
+        say "OK: Telemt container recreated/started from existing compose"
       else
-        TELEMT_IMAGE="$(compose_image_from_file "$INSTALL_DIR/docker-compose.yml" || printf '%s' "$TELEMT_IMAGE")"
-        if ! docker image inspect "$TELEMT_IMAGE" >/dev/null 2>&1; then
-          if [[ "$TELEMT_IMAGE" == telemt-local:* ]]; then
-            script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-            build_script="${BUILD_SCRIPT:-$script_dir/build.sh}"
-            if [ ! -f "$build_script" ]; then
-              say "WARN: missing local image $TELEMT_IMAGE and build.sh was not found near installer"
-              doctor_failed=1
-            elif build_local_image; then
-              say "OK: rebuilt missing local image $TELEMT_IMAGE"
-            else
-              say "WARN: failed to rebuild missing local image $TELEMT_IMAGE"
-              doctor_failed=1
-            fi
-          else
-            if docker pull "$TELEMT_IMAGE"; then
-              say "OK: pulled missing image $TELEMT_IMAGE"
-            else
-              say "WARN: failed to pull missing image $TELEMT_IMAGE"
-              doctor_failed=1
-            fi
-          fi
-        fi
-        if [ "$doctor_failed" = "0" ] && (cd "$INSTALL_DIR" && COMPOSE_INTERACTIVE_NO_CLI=1 compose_cmd up -d --no-recreate >/dev/null); then
-          say "OK: Telemt container created and started"
-        else
-          say "WARN: docker compose up -d --no-recreate failed in $INSTALL_DIR"
-          doctor_failed=1
-        fi
+        say "WARN: failed to recreate/start Telemt container from $INSTALL_DIR/docker-compose.yml"
+        doctor_failed=1
       fi
     else
       say "WARN: docker compose config failed in $INSTALL_DIR"
@@ -1640,6 +1609,33 @@ fix_runtime_permissions() {
   install -d -m 0777 "$INSTALL_DIR/runtime"
 }
 
+ensure_telemt_image_available() {
+  local compose_image script_dir build_script
+
+  compose_image="$(compose_image_from_file "$INSTALL_DIR/docker-compose.yml" || true)"
+  [ -n "$compose_image" ] && TELEMT_IMAGE="$compose_image"
+
+  if docker image inspect "$TELEMT_IMAGE" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if [[ "$TELEMT_IMAGE" == telemt-local:* ]]; then
+    script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+    build_script="${BUILD_SCRIPT:-$script_dir/build.sh}"
+    if [ ! -f "$build_script" ]; then
+      say "WARN: missing local image $TELEMT_IMAGE and build.sh was not found near installer"
+      return 1
+    fi
+    say "Local image $TELEMT_IMAGE is missing. Rebuilding it with build.sh..."
+    build_local_image || return 1
+    docker image inspect "$TELEMT_IMAGE" >/dev/null 2>&1
+    return $?
+  fi
+
+  say "Docker image $TELEMT_IMAGE is missing locally. Pulling it..."
+  docker pull "$TELEMT_IMAGE"
+}
+
 write_compose() {
   local logging_block
   local hardening_block
@@ -1701,14 +1697,15 @@ EOF
 
 start_telemt() {
   cd "$INSTALL_DIR"
-  compose_cmd config >/dev/null
+  compose_cmd config >/dev/null || return 1
+  ensure_telemt_image_available || return 1
   if docker inspect telemt >/dev/null 2>&1; then
     if is_ru; then
       say "Удаляю старый контейнер telemt перед запуском, чтобы обойти ошибку docker-compose v1 ContainerConfig."
     else
       say "Removing the old telemt container before start to avoid the docker-compose v1 ContainerConfig bug."
     fi
-    docker rm -f telemt >/dev/null
+    docker rm -f telemt >/dev/null || return 1
   fi
   compose_cmd up -d --force-recreate
 }
