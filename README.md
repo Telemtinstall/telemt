@@ -165,6 +165,8 @@ chmod +x ./install_docker-telemt.sh
 ./install_docker-telemt.sh --update -lang ru
 ```
 
+Если установщик находит существующую установку в `/opt/telemt-docker`, обычный запуск останавливается. Это защита от случайного запуска install-режима поверх живого сервера. Используйте `--update` для обновления или `--fix-nginx` для ремонта. Переустановка с нуля требует явного подтверждения через `RESET_INSTALL_STATE=1`.
+
 Режим `--update` сохраняет существующие `/opt/telemt-docker/telemt.toml`, `docker-compose.yml`, секреты, ссылки и nginx-конфиги. Он пересобирает локальный Docker image `telemt-local:latest` из актуального upstream release, пересоздает контейнер и заново выполняет API/active-probing проверку. Если в конфиге что-то было поправлено руками, эти правки не перезаписываются.
 
 Домены можно вводить как обычные ASCII-домены, как punycode (`xn--...`) или кириллицей. Установщик переводит IDN в punycode/ASCII перед DNS, Let's Encrypt, nginx и MTProxy-ссылками. Если введен некорректный punycode, установка останавливается до изменения системы.
@@ -431,6 +433,8 @@ Update an already installed server without rewriting current settings:
 ```bash
 ./install_docker-telemt.sh --update -lang ru
 ```
+
+If the installer finds an existing installation under `/opt/telemt-docker`, normal mode stops. This protects live servers from accidentally running install mode again. Use `--update` for updates or `--fix-nginx` for repair. A clean reinstall requires explicit confirmation through `RESET_INSTALL_STATE=1`.
 
 The `--update` mode preserves existing `/opt/telemt-docker/telemt.toml`, `docker-compose.yml`, secrets, links, and nginx configs. It rebuilds the local `telemt-local:latest` Docker image from the current upstream release, recreates the container, and runs the API/active-probing validation again. Manual edits in the existing config are not overwritten.
 

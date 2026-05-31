@@ -9,6 +9,7 @@
 - The same doctor mode now detects duplicate top-level nginx `stream {}` files, keeps the installer-managed Telemt stream config, backs up and disables the extra stream files, then reruns `nginx -t`.
 - Doctor mode no longer asks Docker Compose to recreate an existing Telemt container. It uses `docker start telemt` when the container already exists, avoiding the Compose v1 "image has been removed, volume data could be lost" prompt.
 - If the Telemt container is missing and compose references a missing `telemt-local:*` image, doctor mode now rebuilds it with the local `build.sh` before trying `compose up`.
+- Normal installer mode now refuses to run over an existing installation unless `RESET_INSTALL_STATE=1` is explicitly set. Existing installs should use `--update` or `--fix-nginx`.
 - Improved the final active probing check in the Docker installer:
   - forces IPv4 with `openssl s_client -4` and `curl -4`;
   - stores the full result in `/root/telemt-active-probing-check.txt`;

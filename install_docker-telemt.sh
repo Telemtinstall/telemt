@@ -2334,6 +2334,54 @@ EOF
   fi
 }
 
+existing_install_found() {
+  [ -f "$INSTALL_DIR/telemt.toml" ] ||
+  [ -f "$INSTALL_DIR/docker-compose.yml" ] ||
+  [ -f "$SECRET_FILE" ] ||
+  [ -f "$SAVED_CONFIG" ] ||
+  docker inspect telemt >/dev/null 2>&1
+}
+
+guard_against_accidental_reinstall() {
+  [ "${RESET_INSTALL_STATE:-0}" = "1" ] && return 0
+  existing_install_found || return 0
+
+  if is_ru; then
+    cat >&2 <<EOF
+ОШИБКА: найдена существующая установка Telemt.
+
+Обычный запуск установщика предназначен для чистого сервера и остановлен,
+чтобы не повредить текущие nginx/Docker/Telemt настройки.
+
+Для безопасного обновления:
+  ./install_docker-telemt.sh --update -lang ru
+
+Для ремонта/диагностики:
+  ./install_docker-telemt.sh --fix-nginx -lang ru
+
+Для осознанной переустановки с нуля:
+  RESET_INSTALL_STATE=1 ./install_docker-telemt.sh -lang ru
+EOF
+  else
+    cat >&2 <<EOF
+ERROR: an existing Telemt installation was found.
+
+Normal installer mode is intended for a clean server and has been stopped
+to avoid damaging current nginx/Docker/Telemt settings.
+
+For a safe update:
+  ./install_docker-telemt.sh --update -lang en
+
+For repair/diagnostics:
+  ./install_docker-telemt.sh --fix-nginx -lang en
+
+For an intentional clean reinstall:
+  RESET_INSTALL_STATE=1 ./install_docker-telemt.sh -lang en
+EOF
+  fi
+  exit 1
+}
+
 main() {
   parse_args "$@"
   need_root
@@ -2350,6 +2398,7 @@ main() {
     run_fix_nginx_mode
     exit 0
   fi
+  guard_against_accidental_reinstall
   interactive_inputs
   normalize_domain_input
   normalize_email_input
