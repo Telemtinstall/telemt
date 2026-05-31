@@ -736,10 +736,10 @@ clean_install_reset_if_requested() {
   while IFS= read -r domain; do
     [ -n "$domain" ] || continue
     for path in \
-      "/etc/nginx/sites-available/telemt-mask-${domain}.conf" \
       "/etc/nginx/sites-enabled/telemt-mask-${domain}.conf" \
-      "/etc/nginx/sites-available/${domain}" \
-      "/etc/nginx/sites-enabled/${domain}"
+      "/etc/nginx/sites-available/telemt-mask-${domain}.conf" \
+      "/etc/nginx/sites-enabled/${domain}" \
+      "/etc/nginx/sites-available/${domain}"
     do
       if [ -e "$path" ] || [ -L "$path" ]; then
         install -d -m 0700 "$backup_dir$(dirname "$path")"
@@ -772,8 +772,13 @@ clean_install_reset_if_requested() {
   unset TELEMT_SECRET || true
 
   if have nginx; then
-    nginx -t >/dev/null 2>&1 && (systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true)
+    if nginx -t >/dev/null 2>&1; then
+      systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>/dev/null || true
+    else
+      say "WARN: nginx is temporarily invalid after cleanup; continuing because install will write a fresh Telemt nginx config."
+    fi
   fi
+  return 0
 }
 
 write_file_root() {
@@ -857,7 +862,7 @@ remove_file_if_telemt_managed() {
 
   if [ -L "$file" ]; then
     target="$(readlink -f "$file" 2>/dev/null || true)"
-    if [ -z "$target" ] || nginx_file_is_telemt_managed "$target"; then
+    if [ -z "$target" ] || [ ! -e "$target" ] || nginx_file_is_telemt_managed "$target"; then
       rm -f "$file"
       return 0
     fi
