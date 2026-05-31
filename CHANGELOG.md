@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-05-31
+
+### Changed
+
+- Hardened Docker doctor/container recovery: `--fix-nginx` now rebuilds a missing local image when needed and recreates only the `telemt` container from the existing compose file, which repairs Docker Compose v1 `ContainerConfig` and removed-image failures without regenerating secrets or certificates.
+- Clarified installer/help/README wording: repair mode preserves secrets, users, and certificates, and only edits `telemt.toml` for compatibility when an unsupported optional block prevents startup.
+
 ## 2026-05-19
 
 ### Changed
@@ -7,8 +14,6 @@
 - Removed HTTP/2 from the generated nginx mask-site listener for compatibility with nginx 1.24 and older distribution builds. The mask site only needs plain HTTPS, while Telemt traffic still goes through the nginx stream SNI router.
 - Added `--fix-nginx` / `-fix` emergency doctor mode. It backs up changed nginx files, removes only incompatible `http2` directives, runs `nginx -t`, checks Docker/Compose, starts/reconciles the Telemt container, verifies `telemt.toml`, local API, certbot timer, and listening ports without changing Telemt secrets, users, certificates, or `telemt.toml` contents.
 - The same doctor mode now detects duplicate top-level nginx `stream {}` files, keeps the installer-managed Telemt stream config, backs up and disables the extra stream files, then reruns `nginx -t`.
-- Doctor mode now reconciles the existing Docker stack by rebuilding a missing `telemt-local:*` image when needed and recreating only the `telemt` container from the existing compose file. This avoids Compose v1 `ContainerConfig` and "image has been removed, volume data could be lost" failures after interrupted updates.
-- Container start now verifies that the compose image still exists before every start/resume/update. If `telemt-local:*` was removed, the installer rebuilds it with the local `build.sh`; registry images are pulled again.
 - Normal installer mode now refuses to run over an existing installation unless `RESET_INSTALL_STATE=1` is explicitly set. Existing installs should use `--update` or `--fix-nginx`.
 - Restored the dark mask-site placeholder and removed service/administrator text from the generated page. `--fix-nginx` now also refreshes the existing mask page without changing Telemt secrets, certificates, or `telemt.toml`.
 - Fixed the mask-page refresh path in `--fix-nginx`: repair mode now updates the HTML and restores the local `127.0.0.1:8443` HTTPS mask server when a certificate exists, without rewriting the nginx stream map.

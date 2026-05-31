@@ -84,7 +84,8 @@ usage() {
   -fix, --fix-nginx
                   Аварийно починить nginx после ошибки
                   unknown directive "http2" и выполнить Docker doctor.
-                  Секреты, сертификаты и telemt.toml сохраняются.
+                  Секреты и сертификаты сохраняются; telemt.toml правится
+                  только для совместимости, если он мешает старту.
   -h, --help      Показать эту справку.
 EOF
     return 0
@@ -110,7 +111,8 @@ Options:
   -fix, --fix-nginx
                   Emergency nginx repair for unknown directive "http2"
                   and Docker doctor checks. Secrets, certificates, and
-                  telemt.toml are preserved.
+                  users are preserved; telemt.toml is edited only for
+                  compatibility when it prevents startup.
   -h, --help      Show this help.
 EOF
 }
@@ -172,10 +174,10 @@ run_fix_nginx_mode() {
   install -d -m 0700 "$backup_dir"
 
   if is_ru; then
-    say "Режим fix: чиню nginx-конфиги и проверяю Docker/Telemt. Секреты, сертификаты и telemt.toml не перезаписываю."
+    say "Режим fix: чиню nginx-конфиги и проверяю Docker/Telemt. Секреты и сертификаты не перезаписываю; telemt.toml правлю только для совместимости."
     say "Бэкап измененных файлов: $backup_dir"
   else
-    say "Fix mode: repairing nginx configs and checking Docker/Telemt. Secrets, certificates, and telemt.toml are not rewritten."
+    say "Fix mode: repairing nginx configs and checking Docker/Telemt. Secrets and certificates are not rewritten; telemt.toml is edited only for compatibility."
     say "Changed-file backup: $backup_dir"
   fi
 
@@ -295,9 +297,9 @@ run_fix_nginx_mode() {
 
   say
   if is_ru; then
-    say "Проверяю остальной стек Telemt без перезаписи секретов и конфигов."
+    say "Проверяю остальной стек Telemt без перезаписи секретов и полной перегенерации конфигов."
   else
-    say "Checking the rest of the Telemt stack without rewriting secrets or configs."
+    say "Checking the rest of the Telemt stack without rewriting secrets or fully regenerating configs."
   fi
 
   if have systemctl && systemctl list-unit-files docker.service >/dev/null 2>&1; then
