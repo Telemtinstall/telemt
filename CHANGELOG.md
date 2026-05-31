@@ -10,6 +10,7 @@
 - nginx mask site config now uses an installer-owned file `telemt-mask-<domain>.conf`; legacy installer-generated vhosts are cleaned up when safe, while unrelated nginx site configs are left untouched.
 - Added copy-paste command blocks for fresh install, update, repair/doctor, and full reinstall to both RU and EN README sections.
 - Ubuntu package/startup now prefers Docker Compose v2 and tries to install it even when the old package step was already marked as done. The installer does not upgrade system Python; if only legacy Python `docker-compose` v1 is available, it removes stale Telemt containers before `compose up` to avoid `ContainerConfig`/removed-image crashes.
+- Validation now performs a real HTTPS GET against the mask site through the public 443/SNI path and prints `Mask site OK`/`Маскировочная страница OK` when the placeholder is reachable.
 
 ## 2026-05-19
 

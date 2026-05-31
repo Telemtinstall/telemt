@@ -2127,6 +2127,42 @@ run_curl_probe() {
   return "$rc"
 }
 
+run_mask_site_probe() {
+  local log_file="$1"
+  local out_file="/tmp/telemt-mask-site-check.html"
+  local rc=0
+  local result=""
+
+  {
+    printf '\n[mask site IPv4 GET]\n'
+    log_command "$log_file" curl -4fsSL --connect-timeout 8 --max-time 20 --resolve "${DOMAIN}:443:${PUBLIC_IP}" "https://${DOMAIN}/" -o "$out_file" -w "http_code=%{http_code}\\nsize_download=%{size_download}\\n"
+  } >> "$log_file"
+
+  result="$(curl -4fsSL \
+    --connect-timeout 8 \
+    --max-time 20 \
+    --resolve "${DOMAIN}:443:${PUBLIC_IP}" \
+    "https://${DOMAIN}/" \
+    -o "$out_file" \
+    -w "http_code=%{http_code}\nsize_download=%{size_download}\n" 2>>"$log_file")" || rc=$?
+
+  printf '%s' "$result" >> "$log_file"
+  [ -n "$result" ] && printf '\n' >> "$log_file"
+
+  if [ "$rc" -eq 0 ]; then
+    printf 'result=OK\n' >> "$log_file"
+    if is_ru; then
+      say "Маскировочная страница OK: https://${DOMAIN}/"
+    else
+      say "Mask site OK: https://${DOMAIN}/"
+    fi
+    return 0
+  fi
+
+  printf 'result=FAILED exit_code=%s\n' "$rc" >> "$log_file"
+  return "$rc"
+}
+
 append_active_probe_diagnostics() {
   local log_file="$1"
   local dns_a=""
@@ -2270,6 +2306,8 @@ validate_install() {
   fi
   run_curl_probe "$probe_log" || \
     active_probe_failed "$probe_log" "curl IPv4 HTTPS request through ${PUBLIC_IP}:443"
+  run_mask_site_probe "$probe_log" || \
+    active_probe_failed "$probe_log" "mask site HTTPS GET through ${PUBLIC_IP}:443"
   sed -n '1,24p' "$probe_log" || true
 }
 
