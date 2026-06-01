@@ -658,6 +658,18 @@ step_done() {
   [ -f "$STATE_FILE" ] && grep -Fxq "$1" "$STATE_FILE"
 }
 
+install_in_progress() {
+  [ -f "$STATE_FILE" ] || return 1
+  step_done complete && return 1
+  if ! step_done cert || ! step_done config; then
+    return 0
+  fi
+  if have docker && ! docker inspect -f '{{.State.Running}}' telemt 2>/dev/null | grep -Fxq true; then
+    return 0
+  fi
+  return 1
+}
+
 mark_done() {
   install -d -m 0700 "$(dirname "$STATE_FILE")"
   touch "$STATE_FILE"
@@ -1546,6 +1558,7 @@ EOF
   ln -sfn "$(nginx_mask_site_available_path)" "$(nginx_mask_site_enabled_path)"
   nginx -t
   systemctl reload nginx || systemctl restart nginx
+  sleep 1
 }
 
 append_acme_diagnostics() {
@@ -1562,7 +1575,7 @@ append_acme_diagnostics() {
     printf '\n[dns]\n'
     if have getent; then
       dns_a="$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
-      dns_aaaa="$(getent ahostsv6 "$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+      dns_aaaa="$(getent ahostsv6 "$DOMAIN" 2>/dev/null | awk '$1 !~ /^::ffff:/ {print $1}' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
       printf 'A/IPv4: %s\n' "${dns_a:-not found}"
       printf 'AAAA/IPv6: %s\n' "${dns_aaaa:-not found}"
       if [ -n "$dns_a" ] && ! printf ' %s ' "$dns_a" | grep -q " $PUBLIC_IP "; then
@@ -1707,6 +1720,44 @@ EOF
   die "Let's Encrypt HTTP-01 challenge is not reachable."
 }
 
+fetch_acme_local_body_with_retries() {
+  local attempt body rc
+
+  for attempt in 1 2 3 4 5; do
+    rc=0
+    body="$(curl -4fsS --connect-timeout 5 --max-time 10 -H "Host: ${DOMAIN}" \
+      "http://127.0.0.1/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}" 2>>"$ACME_PREFLIGHT_LOG")" || rc=$?
+    if [ "$rc" -eq 0 ] && [ "$body" = "$ACME_PREFLIGHT_EXPECTED" ]; then
+      printf '%s' "$body"
+      return 0
+    fi
+    printf 'local_check_attempt=%s rc=%s body=%q\n' "$attempt" "$rc" "$body" >> "$ACME_PREFLIGHT_LOG"
+    sleep 1
+  done
+
+  printf '%s' "$body"
+  return 1
+}
+
+fetch_acme_public_body_with_retries() {
+  local attempt body rc
+
+  for attempt in 1 2 3 4 5; do
+    rc=0
+    body="$(curl -4fsS --connect-timeout 8 --max-time 20 --resolve "${DOMAIN}:80:${PUBLIC_IP}" \
+      "http://${DOMAIN}/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}" 2>>"$ACME_PREFLIGHT_LOG")" || rc=$?
+    if [ "$rc" -eq 0 ] && [ "$body" = "$ACME_PREFLIGHT_EXPECTED" ]; then
+      printf '%s' "$body"
+      return 0
+    fi
+    printf 'public_check_attempt=%s rc=%s body=%q\n' "$attempt" "$rc" "$body" >> "$ACME_PREFLIGHT_LOG"
+    sleep 1
+  done
+
+  printf '%s' "$body"
+  return 1
+}
+
 verify_acme_http01_webroot() {
   local local_body=""
   local public_body=""
@@ -1735,9 +1786,8 @@ verify_acme_http01_webroot() {
     say "Checking HTTP-01 webroot locally: http://127.0.0.1/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}"
   fi
 
-  local_body="$(curl -4fsS --connect-timeout 5 --max-time 10 -H "Host: ${DOMAIN}" \
-    "http://127.0.0.1/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}" 2>>"$ACME_PREFLIGHT_LOG")" || rc=$?
-  if [ "$rc" -ne 0 ] || [ "$local_body" != "$ACME_PREFLIGHT_EXPECTED" ]; then
+  local_body="$(fetch_acme_local_body_with_retries)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
     acme_http01_failed "$ACME_PREFLIGHT_LOG" "local nginx webroot check on 127.0.0.1:80"
   fi
 
@@ -1748,9 +1798,8 @@ verify_acme_http01_webroot() {
   fi
 
   rc=0
-  public_body="$(curl -4fsS --connect-timeout 8 --max-time 20 --resolve "${DOMAIN}:80:${PUBLIC_IP}" \
-    "http://${DOMAIN}/.well-known/acme-challenge/${ACME_PREFLIGHT_TOKEN}" 2>>"$ACME_PREFLIGHT_LOG")" || rc=$?
-  if [ "$rc" -ne 0 ] || [ "$public_body" != "$ACME_PREFLIGHT_EXPECTED" ]; then
+  public_body="$(fetch_acme_public_body_with_retries)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
     acme_http01_failed "$ACME_PREFLIGHT_LOG" "public IPv4 webroot check on ${PUBLIC_IP}:80"
   fi
 }
@@ -2201,7 +2250,7 @@ append_active_probe_diagnostics() {
     printf '\n[dns]\n'
     if have getent; then
       dns_a="$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
-      dns_aaaa="$(getent ahostsv6 "$DOMAIN" 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
+      dns_aaaa="$(getent ahostsv6 "$DOMAIN" 2>/dev/null | awk '$1 !~ /^::ffff:/ {print $1}' | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//' || true)"
       printf 'A/IPv4: %s\n' "${dns_a:-not found}"
       printf 'AAAA/IPv6: %s\n' "${dns_aaaa:-not found}"
       if [ -n "$dns_a" ] && ! printf ' %s ' "$dns_a" | grep -q " $PUBLIC_IP "; then
@@ -2763,6 +2812,7 @@ existing_install_found() {
 
 guard_against_accidental_reinstall() {
   [ "${RESET_INSTALL_STATE:-0}" = "1" ] && return 0
+  install_in_progress && return 0
   existing_install_found || return 0
 
   if is_ru; then
@@ -2932,6 +2982,7 @@ main() {
 
   is_ru && say "[08] Проверка" || say "[08] Validate"
   validate_install
+  mark_done complete
 
   if is_ru; then
     cat <<EOF
