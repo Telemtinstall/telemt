@@ -130,6 +130,7 @@ EOF
 
 parse_args() {
   local value
+  local show_help=0
   while [ "$#" -gt 0 ]; do
     case "$1" in
       -lang|--lang)
@@ -145,8 +146,7 @@ parse_args() {
         SCRIPT_LANG_FROM_CLI="1"
         ;;
       -h|--help)
-        usage
-        exit 0
+        show_help=1
         ;;
       -update|--update|update)
         UPDATE_MODE="1"
@@ -160,6 +160,10 @@ parse_args() {
     esac
     shift
   done
+  if [ "$show_help" = "1" ]; then
+    usage
+    exit 0
+  fi
 }
 
 have() {
@@ -937,6 +941,24 @@ compose_cmd() {
   fi
 }
 
+apt_package_available() {
+  local package="$1"
+  apt-cache show "$package" >/dev/null 2>&1
+}
+
+apt_install_first_available() {
+  local package
+
+  for package in "$@"; do
+    if apt_package_available "$package"; then
+      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$package"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 install_compose_v2_if_possible() {
   if docker compose version >/dev/null 2>&1; then
     return 0
@@ -950,9 +972,7 @@ install_compose_v2_if_possible() {
   fi
 
   apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-plugin || \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-v2 || \
-    return 1
+  apt_install_first_available docker-compose-plugin docker-compose-v2 || return 1
 
   docker compose version >/dev/null 2>&1
 }
@@ -990,7 +1010,8 @@ ensure_compose_available() {
   install_compose_v2_if_possible && return 0
 
   if have apt-get; then
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose || true
+    apt-get update
+    apt_install_first_available docker-compose || true
   fi
 
   docker compose version >/dev/null 2>&1 || have docker-compose || die "Docker Compose is not installed."
@@ -1003,9 +1024,8 @@ install_packages() {
 
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnginx-mod-stream || true
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-cli docker-buildx || true
-  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-plugin || \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose-v2 || \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-compose
+  apt_install_first_available docker-compose-plugin docker-compose-v2 docker-compose ||
+    die "Docker Compose package was not found in apt repositories."
 
   ensure_docker_available
   ensure_compose_available
@@ -1301,15 +1321,19 @@ EOF
   sysctl --system
 }
 
+telemt_image_version() {
+  docker run --rm --entrypoint /app/telemt "$TELEMT_IMAGE" --version 2>/dev/null |
+    sed -n 's/^telemt[[:space:]]\+v\{0,1\}\([0-9][0-9.]*\).*/\1/p' |
+    head -n 1
+}
+
 telemt_version_supports_exclusive_mask() {
   local version="${TELEMT_VERSION:-latest}"
   local major minor patch
 
   version="${version#v}"
-  if [ "$version" = "latest" ]; then
-    # "latest" is a moving local image tag. Do not assume it supports newer
-    # config keys because strict config validation would fail closed.
-    return 1
+  if [ "$version" = "latest" ] || ! [[ "$version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+    version="$(telemt_image_version || true)"
   fi
   [[ "$version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || return 1
   IFS=. read -r major minor patch <<< "$version"

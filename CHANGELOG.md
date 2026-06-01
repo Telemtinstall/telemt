@@ -11,6 +11,8 @@
 - Added copy-paste command blocks for fresh install, update, repair/doctor, and full reinstall to both RU and EN README sections.
 - Ubuntu package/startup now prefers Docker Compose v2 and tries to install it even when the old package step was already marked as done. The installer does not upgrade system Python; if only legacy Python `docker-compose` v1 is available, it removes stale Telemt containers before `compose up` to avoid `ContainerConfig`/removed-image crashes.
 - Validation now performs a real HTTPS GET against the mask site through the public 443/SNI path and prints `Mask site OK`/`Маскировочная страница OK` when the placeholder is reachable.
+- Package installation now checks which Compose package exists before installing, avoiding misleading `Unable to locate package docker-compose-plugin` output on Debian/Ubuntu builds that package Compose v2 as `docker-compose`.
+- New installs now detect the actual Telemt version inside the Docker image, so `censorship.exclusive_mask` is enabled for `latest` images when the bundled Telemt binary supports it.
 
 ## 2026-05-19
 
