@@ -29,6 +29,7 @@ Latest repository changes are tracked in [CHANGELOG.md](CHANGELOG.md).
 ```text
 build.sh                  Собрать Docker image Telemt.
 install_docker-telemt.sh  Установить сервер: nginx + certbot + Docker Telemt + маскировка.
+telemt-users.sh           Добавить/удалить пользователей и пересобрать ссылки после установки.
 compose.example.yml       Пример hardened compose для ручной интеграции.
 ```
 
@@ -70,7 +71,8 @@ cd /root/docker-telemt
 wget -O Dockerfile https://raw.githubusercontent.com/Telemtinstall/telemt/main/Dockerfile
 wget -O build.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/build.sh
 wget -O install_docker-telemt.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/install_docker-telemt.sh
-chmod +x ./build.sh ./install_docker-telemt.sh
+wget -O telemt-users.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/telemt-users.sh
+chmod +x ./build.sh ./install_docker-telemt.sh ./telemt-users.sh
 ./install_docker-telemt.sh -lang ru
 ```
 
@@ -84,7 +86,8 @@ cd /root/docker-telemt
 curl -fsSLo Dockerfile https://raw.githubusercontent.com/Telemtinstall/telemt/main/Dockerfile
 curl -fsSLo build.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/build.sh
 curl -fsSLo install_docker-telemt.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/install_docker-telemt.sh
-chmod +x ./build.sh ./install_docker-telemt.sh
+curl -fsSLo telemt-users.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/telemt-users.sh
+chmod +x ./build.sh ./install_docker-telemt.sh ./telemt-users.sh
 ./install_docker-telemt.sh -lang ru
 ```
 
@@ -239,17 +242,18 @@ TELEMT_IMAGE=ghcr.io/Telemtinstall/telemt:latest ./install_docker-telemt.sh
 Скрипт спросит:
 
 ```text
-Proxy domain
-Let's Encrypt email
-Telemt Docker image
-Mask site page: fancy or empty
-Telemt user name
-Max Telemt connections
-MTProxy ad_tag, Enter = skip
-Use Telegram middle proxy
-Enable nginx/Docker access logs
-Enable Docker hardening and healthcheck
-Enable high-load tuning for many clients
+Домен прокси
+Email для Let's Encrypt
+Docker image Telemt
+Маскировочная страница: fancy или empty
+Имя пользователя Telemt
+Сколько ссылок/пользователей создать сразу
+Максимум подключений Telemt
+MTProxy ad_tag, Enter = пропустить
+Использовать Telegram middle proxy
+Включить access-логи nginx/Docker
+Включить Docker hardening и healthcheck
+Включить high-load tuning для большого числа клиентов
 ```
 
 В конце установки скрипт выполняет active probing проверку на вашем домене:
@@ -271,7 +275,19 @@ https://t.me/proxy?server=<domain>&port=443&secret=<tls_secret>
 tg://proxy?server=<domain>&port=443&secret=<tls_secret>
 ```
 
-Ссылки сохраняются в `/root/telemt-proxy-links.txt`, а основная HTTPS-ссылка для быстрого копирования — в `/root/telemt-proxy-link.txt`. `secret` собирается как `ee + 32_hex_secret + hex(domain)`, чтобы Telegram не ругался на неверный параметр ключа.
+Ссылки сохраняются в `/root/telemt-proxy-links.txt`, а основная HTTPS-ссылка для быстрого копирования — в `/root/telemt-proxy-link.txt`. Если при установке выбрать несколько пользователей, файл будет содержать отдельную пару ссылок для каждого пользователя. `secret` собирается как `ee + 32_hex_secret + hex(domain)`, чтобы Telegram не ругался на неверный параметр ключа.
+
+После установки можно добавлять и удалять ссылки отдельной утилитой:
+
+```bash
+telemt-users list
+telemt-users add user2
+telemt-users add friend 5000
+telemt-users links
+telemt-users del friend
+```
+
+`telemt-users` делает бэкап `telemt.toml`, добавляет/удаляет пользователя в `[access.users]`, обновляет список ссылок, пересоздает контейнер Telemt и снова пишет `/root/telemt-proxy-links.txt`.
 
 Если Docker hardening включен, compose добавляет:
 
@@ -343,6 +359,7 @@ PUSH               1 публикует image, по умолчанию 0
 ```text
 build.sh                  Build the Telemt Docker image.
 install_docker-telemt.sh  Install server: nginx + certbot + Docker Telemt + masking.
+telemt-users.sh           Add/remove users and regenerate proxy links after installation.
 compose.example.yml       Hardened compose example for manual integration.
 ```
 
@@ -384,7 +401,8 @@ cd /root/docker-telemt
 wget -O Dockerfile https://raw.githubusercontent.com/Telemtinstall/telemt/main/Dockerfile
 wget -O build.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/build.sh
 wget -O install_docker-telemt.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/install_docker-telemt.sh
-chmod +x ./build.sh ./install_docker-telemt.sh
+wget -O telemt-users.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/telemt-users.sh
+chmod +x ./build.sh ./install_docker-telemt.sh ./telemt-users.sh
 ./install_docker-telemt.sh
 ```
 
@@ -398,7 +416,8 @@ cd /root/docker-telemt
 curl -fsSLo Dockerfile https://raw.githubusercontent.com/Telemtinstall/telemt/main/Dockerfile
 curl -fsSLo build.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/build.sh
 curl -fsSLo install_docker-telemt.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/install_docker-telemt.sh
-chmod +x ./build.sh ./install_docker-telemt.sh
+curl -fsSLo telemt-users.sh https://raw.githubusercontent.com/Telemtinstall/telemt/main/telemt-users.sh
+chmod +x ./build.sh ./install_docker-telemt.sh ./telemt-users.sh
 ./install_docker-telemt.sh
 ```
 
@@ -558,6 +577,7 @@ Let's Encrypt email
 Telemt Docker image
 Mask site page: fancy or empty
 Telemt user name
+How many proxy links/users to create now
 Max Telemt connections
 MTProxy ad_tag, Enter = skip
 Use Telegram middle proxy
@@ -585,7 +605,19 @@ https://t.me/proxy?server=<domain>&port=443&secret=<tls_secret>
 tg://proxy?server=<domain>&port=443&secret=<tls_secret>
 ```
 
-Links are saved to `/root/telemt-proxy-links.txt`, and the primary HTTPS link for quick copy-paste is saved to `/root/telemt-proxy-link.txt`. The `secret` is built as `ee + 32_hex_secret + hex(domain)` so Telegram does not reject the link with an invalid key parameter.
+Links are saved to `/root/telemt-proxy-links.txt`, and the primary HTTPS link for quick copy-paste is saved to `/root/telemt-proxy-link.txt`. If several users are selected during installation, the file contains a separate pair of links for each user. The `secret` is built as `ee + 32_hex_secret + hex(domain)` so Telegram does not reject the link with an invalid key parameter.
+
+After installation, users/links can be managed with:
+
+```bash
+telemt-users list
+telemt-users add user2
+telemt-users add friend 5000
+telemt-users links
+telemt-users del friend
+```
+
+`telemt-users` backs up `telemt.toml`, adds/removes the user in `[access.users]`, updates the shown link list, recreates the Telemt container, and rewrites `/root/telemt-proxy-links.txt`.
 
 When Docker hardening is enabled, compose adds:
 

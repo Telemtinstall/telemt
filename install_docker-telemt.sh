@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_VERSION="2026-05-06"
 INSTALL_DIR="${INSTALL_DIR:-/opt/telemt-docker}"
 STATE_FILE="${STATE_FILE:-/root/.install_docker_telemt.state}"
@@ -12,6 +13,8 @@ EMAIL="${EMAIL:-}"
 TELEMT_IMAGE="${TELEMT_IMAGE:-telemt-local:latest}"
 TELEMT_VERSION="${TELEMT_VERSION:-latest}"
 TELEMT_USER="${TELEMT_USER:-default}"
+TELEMT_USERS="${TELEMT_USERS:-}"
+TELEMT_LINK_COUNT="${TELEMT_LINK_COUNT:-}"
 TELEMT_MAX_TCP_CONNS="${TELEMT_MAX_TCP_CONNS:-5000}"
 AD_TAG="${AD_TAG:-}"
 USE_MIDDLE_PROXY="${USE_MIDDLE_PROXY:-}"
@@ -596,10 +599,75 @@ normalize_email_input() {
   fi
 }
 
+append_telemt_user() {
+  local user="$1"
+  [ -n "$user" ] || return 0
+  if [ -z "$TELEMT_USERS" ]; then
+    TELEMT_USERS="$user"
+    return 0
+  fi
+  case ",$TELEMT_USERS," in
+    *",$user,"*) ;;
+    *) TELEMT_USERS="${TELEMT_USERS},${user}" ;;
+  esac
+}
+
+telemt_users_list() {
+  printf '%s\n' "${TELEMT_USERS:-$TELEMT_USER}" | tr ',' '\n' | awk 'NF {print}'
+}
+
+telemt_users_toml_array() {
+  local first=1
+  local user
+  printf '['
+  while IFS= read -r user; do
+    [ -n "$user" ] || continue
+    if [ "$first" = "1" ]; then
+      first=0
+    else
+      printf ', '
+    fi
+    printf '"%s"' "$user"
+  done < <(telemt_users_list)
+  printf ']'
+}
+
+normalize_telemt_users() {
+  local normalized=""
+  local first=""
+  local user
+
+  TELEMT_USERS="${TELEMT_USERS:-$TELEMT_USER}"
+  TELEMT_USERS="$(printf '%s' "$TELEMT_USERS" | tr ' ' ',')"
+  while IFS= read -r user; do
+    user="$(printf '%s' "$user" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [ -n "$user" ] || continue
+    [[ "$user" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || die "Bad Telemt user name: $user"
+    case ",$normalized," in
+      *",$user,"*) ;;
+      *)
+        [ -n "$first" ] || first="$user"
+        if [ -z "$normalized" ]; then
+          normalized="$user"
+        else
+          normalized="${normalized},${user}"
+        fi
+        ;;
+    esac
+  done < <(printf '%s\n' "$TELEMT_USERS" | tr ',' '\n')
+
+  [ -n "$normalized" ] || die "At least one Telemt user is required."
+  TELEMT_USERS="$normalized"
+  TELEMT_USER="$first"
+  TELEMT_LINK_COUNT="$(telemt_users_list | wc -l | tr -d ' ')"
+}
+
 validate_inputs() {
   [[ "$DOMAIN" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]] || die "Bad domain: $DOMAIN"
   [[ "$EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || die "Bad email: $EMAIL"
-  [[ "$TELEMT_USER" =~ ^[A-Za-z0-9_.-]{1,64}$ ]] || die "Bad Telemt user name: $TELEMT_USER"
+  normalize_telemt_users
+  [[ "$TELEMT_LINK_COUNT" =~ ^[0-9]+$ ]] || die "Bad Telemt link count: $TELEMT_LINK_COUNT"
+  [ "$TELEMT_LINK_COUNT" -ge 1 ] && [ "$TELEMT_LINK_COUNT" -le 100 ] || die "Telemt link count must be between 1 and 100."
   [[ "$TELEMT_MAX_TCP_CONNS" =~ ^[0-9]+$ ]] || die "Bad connection limit: $TELEMT_MAX_TCP_CONNS"
   [[ "$TELEMT_IMAGE" =~ ^[A-Za-z0-9._/:@+-]+$ ]] || die "Bad Docker image: $TELEMT_IMAGE"
   [[ "$TELEMT_VERSION" =~ ^[A-Za-z0-9._/@:+-]+$ ]] || die "Bad Telemt version: $TELEMT_VERSION"
@@ -630,6 +698,8 @@ EMAIL=$(printf '%q' "$EMAIL")
 TELEMT_IMAGE=$(printf '%q' "$TELEMT_IMAGE")
 TELEMT_VERSION=$(printf '%q' "$TELEMT_VERSION")
 TELEMT_USER=$(printf '%q' "$TELEMT_USER")
+TELEMT_USERS=$(printf '%q' "$TELEMT_USERS")
+TELEMT_LINK_COUNT=$(printf '%q' "$TELEMT_LINK_COUNT")
 TELEMT_MAX_TCP_CONNS=$(printf '%q' "$TELEMT_MAX_TCP_CONNS")
 AD_TAG=$(printf '%q' "$AD_TAG")
 USE_MIDDLE_PROXY=$(printf '%q' "$USE_MIDDLE_PROXY")
@@ -1032,7 +1102,7 @@ ensure_compose_available() {
 install_packages() {
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-    ca-certificates curl openssl jq iproute2 nginx certbot docker.io
+    ca-certificates curl openssl jq iproute2 python3-minimal nginx certbot docker.io
 
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnginx-mod-stream || true
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker-cli docker-buildx || true
@@ -1277,15 +1347,9 @@ load_existing_secret_for_links() {
 
 write_proxy_links() {
   local users_json="$1"
-  local domain_hex tls_secret https_link tg_link api_link
+  local domain_hex tls_secret https_link tg_link api_link user secret first_https=""
 
-  load_existing_secret_for_links
   domain_hex="$(hex_encode_ascii "$DOMAIN")"
-  tls_secret="ee${TELEMT_SECRET}${domain_hex}"
-  [[ "$tls_secret" =~ ^ee[a-f0-9]{34,}$ ]] || die "Generated MTProxy TLS secret is invalid."
-
-  https_link="https://t.me/proxy?server=${DOMAIN}&port=443&secret=${tls_secret}"
-  tg_link="tg://proxy?server=${DOMAIN}&port=443&secret=${tls_secret}"
   api_link=""
 
   if command -v jq >/dev/null 2>&1; then
@@ -1295,15 +1359,57 @@ write_proxy_links() {
   fi
 
   {
-    printf '%s\n' "$https_link"
-    printf '%s\n' "$tg_link"
+    while read -r user secret; do
+      [ -n "$user" ] || continue
+      secret="$(printf '%s' "$secret" | tr 'A-F' 'a-f')"
+      [[ "$secret" =~ ^[a-f0-9]{32}$ ]] || continue
+      tls_secret="ee${secret}${domain_hex}"
+      [[ "$tls_secret" =~ ^ee[a-f0-9]{34,}$ ]] || die "Generated MTProxy TLS secret is invalid."
+      https_link="https://t.me/proxy?server=${DOMAIN}&port=443&secret=${tls_secret}"
+      tg_link="tg://proxy?server=${DOMAIN}&port=443&secret=${tls_secret}"
+      [ -n "$first_https" ] || first_https="$https_link"
+      printf '# user: %s\n' "$user"
+      printf '%s\n' "$https_link"
+      printf '%s\n\n' "$tg_link"
+    done < <(
+      awk '
+        /^\[access\.users\]/ {in_users=1; next}
+        /^\[/ && in_users {in_users=0}
+        in_users {
+          line=$0
+          sub(/#.*/, "", line)
+          eq=index(line, "=")
+          if (!eq) next
+          key=substr(line, 1, eq - 1)
+          val=substr(line, eq + 1)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+          gsub(/^"|"$/, "", key)
+          gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+          gsub(/^"|"$/, "", val)
+          if (key != "" && val ~ /^[A-Fa-f0-9]{32}$/) print key, val
+        }
+      ' "$INSTALL_DIR/telemt.toml"
+    )
     if [ -n "$api_link" ]; then
       printf '\n# Telemt API link, for comparison only:\n%s\n' "$api_link"
     fi
   } > /root/telemt-proxy-links.txt
 
-  printf '%s\n' "$https_link" > /root/telemt-proxy-link.txt
+  [ -n "$first_https" ] || die "Cannot generate proxy links from $INSTALL_DIR/telemt.toml."
+  printf '%s\n' "$first_https" > /root/telemt-proxy-link.txt
   chmod 600 /root/telemt-proxy-link.txt /root/telemt-proxy-links.txt 2>/dev/null || true
+}
+
+install_telemt_users_tool() {
+  local src="$SCRIPT_DIR/telemt-users.sh"
+  if [ -f "$src" ]; then
+    install -m 0755 "$src" /usr/local/sbin/telemt-users
+    if is_ru; then
+      say "Утилита пользователей установлена: telemt-users"
+    else
+      say "User management tool installed: telemt-users"
+    fi
+  fi
 }
 
 configure_high_load() {
@@ -1900,11 +2006,14 @@ write_telemt_config() {
   install -d -m 0777 "$INSTALL_DIR/runtime"
 
   local middle_bool="false"
+  local users_array user secret
   [ "$USE_MIDDLE_PROXY" = "yes" ] && middle_bool="true"
+  normalize_telemt_users
+  users_array="$(telemt_users_toml_array)"
 
   {
     cat <<EOF
-show_link = ["${TELEMT_USER}"]
+show_link = ${users_array}
 
 [general]
 fast_mode = true
@@ -1918,7 +2027,7 @@ EOF
     cat <<EOF
 
 [general.links]
-show = ["${TELEMT_USER}"]
+show = ${users_array}
 public_host = "${DOMAIN}"
 public_port = 443
 
@@ -1977,11 +2086,24 @@ replay_check_len = 65536
 ignore_time_skew = false
 
 [access.users]
-"${TELEMT_USER}" = "${TELEMT_SECRET}"
-
+EOF
+    while IFS= read -r user; do
+      [ -n "$user" ] || continue
+      if [ "$user" = "$TELEMT_USER" ]; then
+        secret="$TELEMT_SECRET"
+      else
+        secret="$(openssl rand -hex 16)"
+      fi
+      printf '"%s" = "%s"\n' "$user" "$secret"
+    done < <(telemt_users_list)
+    cat <<EOF
 [access.user_max_tcp_conns]
-"${TELEMT_USER}" = ${TELEMT_MAX_TCP_CONNS}
-
+EOF
+    while IFS= read -r user; do
+      [ -n "$user" ] || continue
+      printf '"%s" = %s\n' "$user" "$TELEMT_MAX_TCP_CONNS"
+    done < <(telemt_users_list)
+    cat <<EOF
 [[upstreams]]
 type = "direct"
 enabled = true
@@ -2395,7 +2517,8 @@ print_plan() {
   Docker image:       $TELEMT_IMAGE
   автосборка image:   $AUTO_BUILD_IMAGE
   страница маскировки: $MASK_SITE_MODE
-  пользователь Telemt: $TELEMT_USER
+  пользователи Telemt: $(printf '%s' "$TELEMT_USERS" | tr ',' ' ')
+  ссылок MTProxy:     $TELEMT_LINK_COUNT
   лимит подключений:  $TELEMT_MAX_TCP_CONNS
   ad_tag:             $([ -n "$AD_TAG" ] && printf yes || printf no)
   middle_proxy:       $USE_MIDDLE_PROXY
@@ -2464,7 +2587,8 @@ Install plan:
   docker image:       $TELEMT_IMAGE
   auto-build image:   $AUTO_BUILD_IMAGE
   mask site page:     $MASK_SITE_MODE
-  Telemt user:        $TELEMT_USER
+  Telemt users:       $(printf '%s' "$TELEMT_USERS" | tr ',' ' ')
+  MTProxy links:      $TELEMT_LINK_COUNT
   connection limit:   $TELEMT_MAX_TCP_CONNS
   ad_tag:             $([ -n "$AD_TAG" ] && printf yes || printf no)
   middle_proxy:       $USE_MIDDLE_PROXY
@@ -2544,6 +2668,8 @@ confirm_plan() {
 }
 
 interactive_inputs() {
+  local i existing_user existing_users extra_user
+
   if is_ru; then
     cat <<'EOF'
 Установщик Telemt Docker.
@@ -2564,6 +2690,18 @@ EOF
     ask_default TELEMT_IMAGE "Docker image Telemt" "$TELEMT_IMAGE"
     ask_mask_site_mode
     ask_default TELEMT_USER "Имя пользователя Telemt" "$TELEMT_USER"
+    TELEMT_USERS="${TELEMT_USERS:-$TELEMT_USER}"
+    existing_users="$TELEMT_USERS"
+    TELEMT_LINK_COUNT="${TELEMT_LINK_COUNT:-$(telemt_users_list | wc -l | tr -d ' ')}"
+    ask_default TELEMT_LINK_COUNT "Сколько ссылок/пользователей создать сразу" "$TELEMT_LINK_COUNT"
+    [[ "$TELEMT_LINK_COUNT" =~ ^[0-9]+$ ]] && [ "$TELEMT_LINK_COUNT" -ge 1 ] && [ "$TELEMT_LINK_COUNT" -le 100 ] || die "Количество ссылок должно быть от 1 до 100."
+    TELEMT_USERS=""
+    append_telemt_user "$TELEMT_USER"
+    for ((i=2; i<=TELEMT_LINK_COUNT; i++)); do
+      existing_user="$(printf '%s\n' "$existing_users" | tr ',' '\n' | sed -n "${i}p" || true)"
+      ask_default extra_user "Имя пользователя Telemt #${i}" "${existing_user:-user${i}}"
+      append_telemt_user "$extra_user"
+    done
     ask_default TELEMT_MAX_TCP_CONNS "Максимум подключений Telemt" "$TELEMT_MAX_TCP_CONNS"
     ask_default AD_TAG "MTProxy ad_tag, Enter = пропустить" "$AD_TAG"
   else
@@ -2586,6 +2724,18 @@ EOF
     ask_default TELEMT_IMAGE "Telemt Docker image" "$TELEMT_IMAGE"
     ask_mask_site_mode
     ask_default TELEMT_USER "Telemt user name" "$TELEMT_USER"
+    TELEMT_USERS="${TELEMT_USERS:-$TELEMT_USER}"
+    existing_users="$TELEMT_USERS"
+    TELEMT_LINK_COUNT="${TELEMT_LINK_COUNT:-$(telemt_users_list | wc -l | tr -d ' ')}"
+    ask_default TELEMT_LINK_COUNT "How many proxy links/users to create now" "$TELEMT_LINK_COUNT"
+    [[ "$TELEMT_LINK_COUNT" =~ ^[0-9]+$ ]] && [ "$TELEMT_LINK_COUNT" -ge 1 ] && [ "$TELEMT_LINK_COUNT" -le 100 ] || die "Link count must be between 1 and 100."
+    TELEMT_USERS=""
+    append_telemt_user "$TELEMT_USER"
+    for ((i=2; i<=TELEMT_LINK_COUNT; i++)); do
+      existing_user="$(printf '%s\n' "$existing_users" | tr ',' '\n' | sed -n "${i}p" || true)"
+      ask_default extra_user "Telemt user name #${i}" "${existing_user:-user${i}}"
+      append_telemt_user "$extra_user"
+    done
     ask_default TELEMT_MAX_TCP_CONNS "Max Telemt connections" "$TELEMT_MAX_TCP_CONNS"
     ask_default AD_TAG "MTProxy ad_tag, Enter = skip" "$AD_TAG"
   fi
@@ -2779,6 +2929,7 @@ EOF
   ensure_docker_available
   backup_update_state
   refresh_docker_image_for_update
+  install_telemt_users_tool
   fix_runtime_permissions
   start_telemt
   validate_install
@@ -2971,6 +3122,7 @@ main() {
     ensure_secret
     write_telemt_config
     write_compose
+    install_telemt_users_tool
     write_nginx_full_config
     write_firewall_hints
     mark_done config

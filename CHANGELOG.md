@@ -7,6 +7,8 @@
 - Fresh installs now retry the ACME HTTP-01 local and public IPv4 preflight after nginx reload. This avoids false `404` failures when nginx needs a moment to serve the newly written challenge file, while still stopping on real webroot/DNS/firewall problems.
 - ACME and active-probing diagnostics no longer treat IPv4-mapped `::ffff:<ipv4>` resolver output as a real DNS AAAA record.
 - Failed or interrupted fresh installs can be rerun normally: the reinstall guard now allows resume while the installer state is incomplete, and successful installs mark the state as complete.
+- New installs can create multiple MTProxy users/links at once. The generated `telemt.toml` includes all users, and `/root/telemt-proxy-links.txt` contains a separate link pair for each user.
+- Added `telemt-users`: a post-install utility to list, add, delete, and regenerate Telemt user links. It backs up `telemt.toml`, updates `[access.users]`, recreates the container, and rewrites the link files.
 - Hardened Docker doctor/container recovery: `--fix-nginx` now rebuilds a missing local image when needed and recreates only the `telemt` container from the existing compose file, which repairs Docker Compose v1 `ContainerConfig` and removed-image failures without regenerating secrets or certificates.
 - Clarified installer/help/README wording: repair mode preserves secrets, users, and certificates, and only edits `telemt.toml` for compatibility when an unsupported optional block prevents startup.
 - `RESET_INSTALL_STATE=1` is now a true clean install path: it removes saved prompts, old Telemt secret/config/compose/container/link files before asking questions, and rebuilds `telemt-local:latest` instead of reusing a stale local image.
