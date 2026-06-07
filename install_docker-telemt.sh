@@ -25,6 +25,7 @@ AUTO_BUILD_IMAGE="${AUTO_BUILD_IMAGE:-yes}"
 MASK_SITE_MODE="${MASK_SITE_MODE:-fancy}"
 SCRIPT_LANG="${SCRIPT_LANG:-en}"
 ASSUME_YES="${ASSUME_YES:-0}"
+AUTO_MODE="${AUTO_MODE:-0}"
 UPDATE_MODE="${UPDATE_MODE:-0}"
 FIX_NGINX_MODE="${FIX_NGINX_MODE:-0}"
 NO_CACHE="${NO_CACHE:-0}"
@@ -70,17 +71,23 @@ usage() {
   if is_ru; then
     cat <<'EOF'
 Использование:
-  ./install_docker-telemt.sh [-lang ru|en] [--update] [--fix-nginx]
+  ./install_docker-telemt.sh [-lang ru|en] [--auto] [--update] [--fix-nginx]
 
 Примеры:
   ./install_docker-telemt.sh
   ./install_docker-telemt.sh -lang ru
+  DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang ru
   ./install_docker-telemt.sh --lang en
   ./install_docker-telemt.sh --update -lang ru
   ./install_docker-telemt.sh --fix-nginx -lang ru
 
 Опции:
   -lang, --lang   Язык интерфейса установщика: en или ru.
+  -auto, --auto   Автоматический режим: взять значения по умолчанию,
+                  не задавать вопросов и автоматически подтвердить план.
+                  Домен берется из DOMAIN, сохраненного конфига или FQDN
+                  hostname; если домен не найден, установка остановится
+                  с понятной ошибкой.
   -update, --update
                   Обновить Docker image Telemt и перезапустить контейнер,
                   сохранив существующие telemt.toml, docker-compose.yml,
@@ -102,17 +109,22 @@ EOF
 
   cat <<'EOF'
 Usage:
-  ./install_docker-telemt.sh [-lang ru|en] [--update] [--fix-nginx]
+  ./install_docker-telemt.sh [-lang ru|en] [--auto] [--update] [--fix-nginx]
 
 Examples:
   ./install_docker-telemt.sh
   ./install_docker-telemt.sh -lang ru
+  DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang en
   ./install_docker-telemt.sh --lang en
   ./install_docker-telemt.sh --update -lang ru
   ./install_docker-telemt.sh --fix-nginx -lang ru
 
 Options:
   -lang, --lang   Installer interface language: en or ru.
+  -auto, --auto   Automatic mode: use defaults, ask no questions, and
+                  confirm the plan automatically. Domain is read from DOMAIN,
+                  saved config, or FQDN hostname; if no domain is available,
+                  the installer stops with a clear error.
   -update, --update
                   Update the Telemt Docker image and recreate the container
                   while preserving existing telemt.toml, docker-compose.yml,
@@ -150,6 +162,10 @@ parse_args() {
         ;;
       -h|--help)
         show_help=1
+        ;;
+      -auto|--auto|auto|--assume-yes|--yes|-y)
+        AUTO_MODE="1"
+        ASSUME_YES="1"
         ;;
       -update|--update|update)
         UPDATE_MODE="1"
@@ -551,6 +567,46 @@ ask_mask_site_mode() {
       say "Please answer fancy or empty."
     fi
   done
+}
+
+auto_domain_from_hostname() {
+  local candidate lowered
+  for candidate in "$(hostname -f 2>/dev/null || true)" "$(hostname 2>/dev/null || true)"; do
+    candidate="${candidate%.}"
+    lowered="$(lower "$candidate")"
+    case "$lowered" in
+      ""|localhost|localhost.localdomain|*.local)
+        continue
+        ;;
+    esac
+    if [[ "$candidate" =~ ^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$ ]]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+fill_auto_defaults() {
+  [ "$ASSUME_YES" = "1" ] || return 0
+
+  if [ -z "$DOMAIN" ]; then
+    DOMAIN="$(auto_domain_from_hostname || true)"
+  fi
+
+  if [ -z "$DOMAIN" ]; then
+    if is_ru; then
+      die "Автоматический режим не смог определить домен. Запустите так: DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang ru"
+    else
+      die "Automatic mode cannot detect a domain. Run: DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang en"
+    fi
+  fi
+
+  if is_ru; then
+    say "Автоматический режим: вопросы пропущены, используются значения по умолчанию."
+  else
+    say "Automatic mode: prompts are skipped, defaults are used."
+  fi
 }
 
 needs_idn_normalization() {
@@ -2835,6 +2891,7 @@ EOF
     append_telemt_user "$TELEMT_USER"
     for ((i=2; i<=TELEMT_LINK_COUNT; i++)); do
       existing_user="$(printf '%s\n' "$existing_users" | tr ',' '\n' | sed -n "${i}p" || true)"
+      extra_user=""
       ask_default extra_user "Имя пользователя Telemt #${i}" "${existing_user:-user${i}}"
       append_telemt_user "$extra_user"
     done
@@ -2869,6 +2926,7 @@ EOF
     append_telemt_user "$TELEMT_USER"
     for ((i=2; i<=TELEMT_LINK_COUNT; i++)); do
       existing_user="$(printf '%s\n' "$existing_users" | tr ',' '\n' | sed -n "${i}p" || true)"
+      extra_user=""
       ask_default extra_user "Telemt user name #${i}" "${existing_user:-user${i}}"
       append_telemt_user "$extra_user"
     done
@@ -3174,6 +3232,7 @@ main() {
   fi
 
   guard_against_accidental_reinstall
+  fill_auto_defaults
   interactive_inputs
   normalize_domain_input
   normalize_email_input

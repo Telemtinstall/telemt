@@ -61,6 +61,14 @@ chmod +x ./build.sh ./install_docker-telemt.sh
 ./install_docker-telemt.sh -lang ru
 ```
 
+Автоматическая установка без вопросов:
+
+```bash
+DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang ru
+```
+
+`--auto` включает ответы по умолчанию и автоматически подтверждает план установки. Домен берется из `DOMAIN`, сохраненного конфига или FQDN hostname сервера. Если домен определить нельзя, установщик сразу остановится с понятной ошибкой и не будет ждать ввода.
+
 Скачать только нужные файлы через `wget`:
 
 ```bash
@@ -392,6 +400,14 @@ cd /root/docker-telemt
 chmod +x ./build.sh ./install_docker-telemt.sh
 ./install_docker-telemt.sh
 ```
+
+Automatic install without prompts:
+
+```bash
+DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang en
+```
+
+`--auto` uses default answers and confirms the install plan automatically. The domain is read from `DOMAIN`, saved config, or the server FQDN hostname. If no domain can be detected, the installer stops with a clear error instead of waiting for input.
 
 Download only the required files with `wget`:
 
