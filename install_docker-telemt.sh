@@ -910,6 +910,7 @@ clean_install_reset_if_requested() {
   rm -f "$STATE_FILE" "$SAVED_CONFIG" \
     /root/telemt-proxy-links.txt \
     /root/telemt-proxy-link.txt \
+    /root/telemt-proxy-link-ip.txt \
     /root/telemt-active-probing-check.txt \
     /root/telemt-acme-http01-check.txt \
     /root/telemt-certbot-check.txt
@@ -1476,7 +1477,7 @@ load_existing_secret_for_links() {
 
 write_proxy_links() {
   local users_json="$1"
-  local domain_hex tls_secret https_link tg_link api_link user secret first_https=""
+  local domain_hex tls_secret https_link tg_link direct_https direct_tg api_link user secret first_https="" first_direct_https=""
 
   domain_hex="$(hex_encode_ascii "$DOMAIN")"
   api_link=""
@@ -1500,6 +1501,14 @@ write_proxy_links() {
       printf '# user: %s\n' "$user"
       printf '%s\n' "$https_link"
       printf '%s\n\n' "$tg_link"
+      if [ -n "${PUBLIC_IP:-}" ] && [ "$PUBLIC_IP" != "$DOMAIN" ]; then
+        direct_https="https://t.me/proxy?server=${PUBLIC_IP}&port=443&secret=${tls_secret}"
+        direct_tg="tg://proxy?server=${PUBLIC_IP}&port=443&secret=${tls_secret}"
+        [ -n "$first_direct_https" ] || first_direct_https="$direct_https"
+        printf '# direct IP variant, TLS SNI remains %s\n' "$DOMAIN"
+        printf '%s\n' "$direct_https"
+        printf '%s\n\n' "$direct_tg"
+      fi
     done < <(
       awk '
         /^\[access\.users\]/ {in_users=1; next}
@@ -1526,6 +1535,10 @@ write_proxy_links() {
 
   [ -n "$first_https" ] || die "Cannot generate proxy links from $INSTALL_DIR/telemt.toml."
   printf '%s\n' "$first_https" > /root/telemt-proxy-link.txt
+  if [ -n "$first_direct_https" ]; then
+    printf '%s\n' "$first_direct_https" > /root/telemt-proxy-link-ip.txt
+    chmod 600 /root/telemt-proxy-link-ip.txt 2>/dev/null || true
+  fi
   chmod 600 /root/telemt-proxy-link.txt /root/telemt-proxy-links.txt 2>/dev/null || true
 }
 
@@ -2112,15 +2125,9 @@ write_nginx_full_config() {
   write_file_root /etc/nginx/modules-enabled/60-telemt-stream-sni.conf 0644 root:root <<EOF
 # Managed by install_docker-telemt.sh. Do not edit manually.
 stream {
-    map \$ssl_preread_server_name \$telemt_backend {
-        ${DOMAIN} 127.0.0.1:1443;
-        default   127.0.0.1:8443;
-    }
-
     server {
         listen 443;
-        proxy_pass \$telemt_backend;
-        ssl_preread on;
+        proxy_pass 127.0.0.1:1443;
         proxy_connect_timeout 5s;
         proxy_timeout 24h;
     }
@@ -2524,7 +2531,7 @@ append_active_probe_diagnostics() {
     nginx -t 2>&1 || true
     if [ -f /etc/nginx/modules-enabled/60-telemt-stream-sni.conf ]; then
       printf 'stream_config=/etc/nginx/modules-enabled/60-telemt-stream-sni.conf exists\n'
-      grep -nE 'stream|ssl_preread|listen 443|127\.0\.0\.1:(1443|8443)' /etc/nginx/modules-enabled/60-telemt-stream-sni.conf 2>/dev/null || true
+      grep -nE 'stream|listen 443|proxy_pass|127\.0\.0\.1:1443' /etc/nginx/modules-enabled/60-telemt-stream-sni.conf 2>/dev/null || true
     else
       printf 'stream_config=/etc/nginx/modules-enabled/60-telemt-stream-sni.conf missing\n'
     fi
@@ -2575,7 +2582,7 @@ Active probing check failed: ${failed_check}
   1. Откройте входящие TCP-порты 80 и 443 в firewall сервера и в панели хостера.
   2. Проверьте, что DNS A-запись домена указывает на этот IPv4: ${PUBLIC_IP}.
   3. Если у домена есть AAAA/IPv6, либо настройте IPv6 и listen [::]:443, либо удалите AAAA-запись.
-  4. Проверьте nginx stream: должен быть ssl_preread на 443 и маршруты 127.0.0.1:1443 / 127.0.0.1:8443.
+  4. Проверьте nginx stream: он должен без ssl_preread проксировать весь 443/tcp в 127.0.0.1:1443.
   5. Проверьте, что контейнер telemt запущен и слушает 127.0.0.1:1443, а API доступен на 127.0.0.1:9091.
   6. Полный лог диагностики сохранен тут: ${log_file}
 EOF
@@ -2595,7 +2602,7 @@ What to do:
   1. Allow inbound TCP ports 80 and 443 in the server firewall and provider firewall.
   2. Make sure the domain A record points to this IPv4: ${PUBLIC_IP}.
   3. If the domain has AAAA/IPv6 records, configure IPv6 and listen [::]:443, or remove the AAAA record.
-  4. Check nginx stream: ssl_preread must listen on 443 and route to 127.0.0.1:1443 / 127.0.0.1:8443.
+  4. Check nginx stream: it must proxy all 443/tcp to 127.0.0.1:1443 without ssl_preread.
   5. Check that the telemt container is running, 127.0.0.1:1443 is listening, and API is reachable on 127.0.0.1:9091.
   6. Full diagnostics log: ${log_file}
 EOF
@@ -2992,7 +2999,8 @@ backup_update_state() {
     "/etc/nginx/sites-enabled/$DOMAIN" \
     /etc/nginx/modules-enabled/60-telemt-stream-sni.conf \
     /root/telemt-proxy-links.txt \
-    /root/telemt-proxy-link.txt
+    /root/telemt-proxy-link.txt \
+    /root/telemt-proxy-link-ip.txt
   do
     if [ -e "$path" ] || [ -L "$path" ]; then
       cp -a "$path" "$backup_dir"/
@@ -3283,6 +3291,7 @@ $(cat /root/telemt-proxy-links.txt 2>/dev/null || cat /root/telemt-proxy-link.tx
   сохраненный ввод: $SAVED_CONFIG
   ссылки:       /root/telemt-proxy-links.txt
   основная ссылка: /root/telemt-proxy-link.txt
+  IP-ссылка:    /root/telemt-proxy-link-ip.txt
   active probe: /root/telemt-active-probing-check.txt
 
 Команды:
@@ -3305,6 +3314,7 @@ Files:
   saved input:  $SAVED_CONFIG
   links:        /root/telemt-proxy-links.txt
   primary link: /root/telemt-proxy-link.txt
+  IP link:      /root/telemt-proxy-link-ip.txt
   active probe: /root/telemt-active-probing-check.txt
 
 Commands:

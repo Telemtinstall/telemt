@@ -205,7 +205,7 @@ chmod +x ./install_docker-telemt.sh
 ./install_docker-telemt.sh --fix-nginx -lang ru
 ```
 
-Этот режим делает бэкап измененных nginx-файлов, удаляет несовместимые строки `http2 on;` и `listen ... http2;`, а при дублирующихся top-level `stream {}` блоках оставляет основной Telemt stream config и отключает лишние stream-файлы. Затем запускает `nginx -t` и reload. После этого он проверяет Docker/Compose, при необходимости ставит Docker Compose v2, пересобирает отсутствующий локальный image `telemt-local:*` через `build.sh` и пересоздает только контейнер `telemt` из уже существующего compose-файла. Системный Python при этом не обновляется. Это обходит Docker Compose v1 `ContainerConfig`/removed-image ошибки после неудачных обновлений. Потом проверяет наличие `telemt.toml`, локальный API, `certbot.timer` и слушающие порты. Telemt-секреты, пользователи и сертификаты сохраняются. `telemt.toml` не перегенерируется полностью; doctor может только убрать несовместимый optional-блок `censorship.exclusive_mask`, если старая версия Telemt из-за него не стартует. Обычная установка и `--update` дополнительно делают GET-проверку маскировочной страницы через публичный `443/tcp` и печатают `Маскировочная страница OK`, если сайт реально открывается.
+Этот режим делает бэкап измененных nginx-файлов, удаляет несовместимые строки `http2 on;` и `listen ... http2;`, а при дублирующихся top-level `stream {}` блоках оставляет основной Telemt stream config и отключает лишние stream-файлы. Stream-конфиг на `443/tcp` работает как простой TCP-прокси в Telemt без `ssl_preread`: FakeTLS/SNI должен разбирать сам Telemt, иначе Telegram-клиенты могут зависать до попадания в прокси. Затем запускает `nginx -t` и reload. После этого он проверяет Docker/Compose, при необходимости ставит Docker Compose v2, пересобирает отсутствующий локальный image `telemt-local:*` через `build.sh` и пересоздает только контейнер `telemt` из уже существующего compose-файла. Системный Python при этом не обновляется. Это обходит Docker Compose v1 `ContainerConfig`/removed-image ошибки после неудачных обновлений. Потом проверяет наличие `telemt.toml`, локальный API, `certbot.timer` и слушающие порты. Telemt-секреты, пользователи и сертификаты сохраняются. `telemt.toml` не перегенерируется полностью; doctor может только убрать несовместимый optional-блок `censorship.exclusive_mask`, если старая версия Telemt из-за него не стартует. Обычная установка и `--update` дополнительно делают GET-проверку маскировочной страницы через публичный `443/tcp` и печатают `Маскировочная страница OK`, если сайт реально открывается.
 
 Обновить уже установленный сервер без перезаписи текущих настроек:
 
@@ -277,7 +277,7 @@ https://t.me/proxy?server=<domain>&port=443&secret=<tls_secret>
 tg://proxy?server=<domain>&port=443&secret=<tls_secret>
 ```
 
-Ссылки сохраняются в `/root/telemt-proxy-links.txt`, а основная HTTPS-ссылка для быстрого копирования — в `/root/telemt-proxy-link.txt`. Если при установке выбрать несколько пользователей, файл будет содержать отдельную пару ссылок для каждого пользователя. `secret` собирается как `ee + 32_hex_secret + hex(domain)`, чтобы Telegram не ругался на неверный параметр ключа.
+Ссылки сохраняются в `/root/telemt-proxy-links.txt`, а основная HTTPS-ссылка для быстрого копирования — в `/root/telemt-proxy-link.txt`. Если при установке выбрать несколько пользователей, файл будет содержать отдельную пару ссылок для каждого пользователя. `secret` собирается как `ee + 32_hex_secret + hex(domain)`, чтобы Telegram не ругался на неверный параметр ключа. Если публичный IPv4 сервера отличается от домена, дополнительно пишется `/root/telemt-proxy-link-ip.txt`: это ссылка с подключением к IP, но с тем же доменным TLS-SNI внутри `secret`.
 
 После установки можно добавлять и удалять ссылки отдельной утилитой:
 
@@ -289,7 +289,7 @@ telemt-users links
 telemt-users del friend
 ```
 
-`telemt-users` делает бэкап `telemt.toml`, добавляет/удаляет пользователя в `[access.users]`, обновляет список ссылок, пересоздает контейнер Telemt и снова пишет `/root/telemt-proxy-links.txt`.
+`telemt-users` делает бэкап `telemt.toml`, добавляет/удаляет пользователя в `[access.users]`, обновляет список ссылок, пересоздает контейнер Telemt и снова пишет `/root/telemt-proxy-links.txt` и `/root/telemt-proxy-link-ip.txt`, если доступен публичный IPv4.
 
 Если Docker hardening включен, compose добавляет:
 
@@ -537,7 +537,7 @@ Emergency nginx repair after `unknown directive "http2"`:
 ./install_docker-telemt.sh --fix-nginx -lang ru
 ```
 
-This mode backs up changed nginx files, removes incompatible `http2 on;` and `listen ... http2;` syntax, and when duplicate top-level `stream {}` blocks are present it keeps the primary Telemt stream config and disables extra stream files. Then it runs `nginx -t` and reloads nginx. After that it checks Docker/Compose, installs Docker Compose v2 when needed, rebuilds a missing local `telemt-local:*` image through `build.sh` when needed, and recreates only the `telemt` container from the existing compose file. System Python is not upgraded. This works around Docker Compose v1 `ContainerConfig`/removed-image failures after broken updates. Then it verifies `telemt.toml`, the local API, `certbot.timer`, and listening ports. Telemt secrets, users, and certificates are preserved. `telemt.toml` is not fully regenerated; doctor may only remove the incompatible optional `censorship.exclusive_mask` block when an older Telemt version cannot start with it. Normal install and `--update` also run a real GET check against the mask site through public `443/tcp` and print `Mask site OK` when the page is reachable.
+This mode backs up changed nginx files, removes incompatible `http2 on;` and `listen ... http2;` syntax, and when duplicate top-level `stream {}` blocks are present it keeps the primary Telemt stream config and disables extra stream files. The `443/tcp` stream config is a plain TCP proxy to Telemt without `ssl_preread`: Telemt itself must parse FakeTLS/SNI, otherwise Telegram clients can stall before reaching the proxy. Then it runs `nginx -t` and reloads nginx. After that it checks Docker/Compose, installs Docker Compose v2 when needed, rebuilds a missing local `telemt-local:*` image through `build.sh` when needed, and recreates only the `telemt` container from the existing compose file. System Python is not upgraded. This works around Docker Compose v1 `ContainerConfig`/removed-image failures after broken updates. Then it verifies `telemt.toml`, the local API, `certbot.timer`, and listening ports. Telemt secrets, users, and certificates are preserved. `telemt.toml` is not fully regenerated; doctor may only remove the incompatible optional `censorship.exclusive_mask` block when an older Telemt version cannot start with it. Normal install and `--update` also run a real GET check against the mask site through public `443/tcp` and print `Mask site OK` when the page is reachable.
 
 Update an already installed server without rewriting current settings:
 
@@ -609,7 +609,7 @@ https://t.me/proxy?server=<domain>&port=443&secret=<tls_secret>
 tg://proxy?server=<domain>&port=443&secret=<tls_secret>
 ```
 
-Links are saved to `/root/telemt-proxy-links.txt`, and the primary HTTPS link for quick copy-paste is saved to `/root/telemt-proxy-link.txt`. If several users are selected during installation, the file contains a separate pair of links for each user. The `secret` is built as `ee + 32_hex_secret + hex(domain)` so Telegram does not reject the link with an invalid key parameter.
+Links are saved to `/root/telemt-proxy-links.txt`, and the primary HTTPS link for quick copy-paste is saved to `/root/telemt-proxy-link.txt`. If several users are selected during installation, the file contains a separate pair of links for each user. The `secret` is built as `ee + 32_hex_secret + hex(domain)` so Telegram does not reject the link with an invalid key parameter. If the server public IPv4 differs from the domain, `/root/telemt-proxy-link-ip.txt` is written as well: it connects to the IP while keeping the same domain TLS SNI inside the `secret`.
 
 After installation, users/links can be managed with:
 
@@ -621,7 +621,7 @@ telemt-users links
 telemt-users del friend
 ```
 
-`telemt-users` backs up `telemt.toml`, adds/removes the user in `[access.users]`, updates the shown link list, recreates the Telemt container, and rewrites `/root/telemt-proxy-links.txt`.
+`telemt-users` backs up `telemt.toml`, adds/removes the user in `[access.users]`, updates the shown link list, recreates the Telemt container, and rewrites `/root/telemt-proxy-links.txt` plus `/root/telemt-proxy-link-ip.txt` when a public IPv4 is available.
 
 When Docker hardening is enabled, compose adds:
 

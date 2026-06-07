@@ -6,6 +6,7 @@ CONFIG_FILE="${CONFIG_FILE:-$INSTALL_DIR/telemt.toml}"
 COMPOSE_FILE="${COMPOSE_FILE:-$INSTALL_DIR/docker-compose.yml}"
 LINKS_FILE="${LINKS_FILE:-/root/telemt-proxy-links.txt}"
 PRIMARY_LINK_FILE="${PRIMARY_LINK_FILE:-/root/telemt-proxy-link.txt}"
+DIRECT_LINK_FILE="${DIRECT_LINK_FILE:-/root/telemt-proxy-link-ip.txt}"
 DEFAULT_MAX_TCP_CONNS="${DEFAULT_MAX_TCP_CONNS:-5000}"
 
 say() { printf '%s\n' "$*"; }
@@ -61,6 +62,25 @@ config_value() {
   ' "$CONFIG_FILE"
 }
 
+config_first_value() {
+  local key="$1"
+  awk -v wanted="$key" '
+    {
+      line=$0
+      sub(/#.*/, "", line)
+      eq=index(line, "=")
+      if (!eq) next
+      key=substr(line, 1, eq - 1)
+      val=substr(line, eq + 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      gsub(/^"|"$/, "", key)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+      gsub(/^"|"$/, "", val)
+      if (key == wanted) { print val; exit }
+    }
+  ' "$CONFIG_FILE"
+}
+
 users_and_secrets() {
   awk '
     /^\[access\.users\]/ {in_users=1; next}
@@ -88,9 +108,10 @@ list_users() {
 
 write_links() {
   require_config
-  local domain port domain_hex user secret tls_secret https_link tg_link first_https=""
+  local domain port domain_hex direct_host user secret tls_secret https_link tg_link direct_https direct_tg first_https="" first_direct_https=""
   domain="$(config_value 'general\.links' public_host)"
   port="$(config_value 'general\.links' public_port)"
+  direct_host="$(config_first_value announce || true)"
   [ -n "$domain" ] || die "Cannot detect public_host from [general.links]."
   port="${port:-443}"
   domain_hex="$(hex_encode_ascii "$domain")"
@@ -108,14 +129,29 @@ write_links() {
       printf '# user: %s\n' "$user"
       printf '%s\n' "$https_link"
       printf '%s\n\n' "$tg_link"
+      if [ -n "$direct_host" ] && [ "$direct_host" != "$domain" ]; then
+        direct_https="https://t.me/proxy?server=${direct_host}&port=${port}&secret=${tls_secret}"
+        direct_tg="tg://proxy?server=${direct_host}&port=${port}&secret=${tls_secret}"
+        [ -n "$first_direct_https" ] || first_direct_https="$direct_https"
+        printf '# direct IP variant, TLS SNI remains %s\n' "$domain"
+        printf '%s\n' "$direct_https"
+        printf '%s\n\n' "$direct_tg"
+      fi
     } >> "$LINKS_FILE"
   done < <(users_and_secrets)
 
   [ -n "$first_https" ] || die "No Telemt users found in $CONFIG_FILE."
   printf '%s\n' "$first_https" > "$PRIMARY_LINK_FILE"
+  if [ -n "$first_direct_https" ]; then
+    printf '%s\n' "$first_direct_https" > "$DIRECT_LINK_FILE"
+    chmod 600 "$DIRECT_LINK_FILE" 2>/dev/null || true
+  fi
   chmod 600 "$PRIMARY_LINK_FILE" "$LINKS_FILE" 2>/dev/null || true
   say "Links written: $LINKS_FILE"
   say "Primary link:  $PRIMARY_LINK_FILE"
+  if [ -n "$first_direct_https" ]; then
+    say "Direct IP link: $DIRECT_LINK_FILE"
+  fi
 }
 
 restart_telemt() {
