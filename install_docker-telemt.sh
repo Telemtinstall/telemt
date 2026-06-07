@@ -2203,9 +2203,15 @@ write_nginx_full_config() {
   write_file_root /etc/nginx/modules-enabled/60-telemt-stream-sni.conf 0644 root:root <<EOF
 # Managed by install_docker-telemt.sh. Do not edit manually.
 stream {
+    map \$ssl_preread_server_name \$telemt_backend {
+        ${DOMAIN} 127.0.0.1:1443;
+        default   127.0.0.1:8443;
+    }
+
     server {
         listen 443;
-        proxy_pass 127.0.0.1:1443;
+        proxy_pass \$telemt_backend;
+        ssl_preread on;
         proxy_connect_timeout 5s;
         proxy_timeout 24h;
     }
@@ -2668,7 +2674,7 @@ append_active_probe_diagnostics() {
     nginx -t 2>&1 || true
     if [ -f /etc/nginx/modules-enabled/60-telemt-stream-sni.conf ]; then
       printf 'stream_config=/etc/nginx/modules-enabled/60-telemt-stream-sni.conf exists\n'
-      grep -nE 'stream|listen 443|proxy_pass|127\.0\.0\.1:1443' /etc/nginx/modules-enabled/60-telemt-stream-sni.conf 2>/dev/null || true
+      grep -nE 'stream|ssl_preread|listen 443|127\.0\.0\.1:(1443|8443)' /etc/nginx/modules-enabled/60-telemt-stream-sni.conf 2>/dev/null || true
     else
       printf 'stream_config=/etc/nginx/modules-enabled/60-telemt-stream-sni.conf missing\n'
     fi
@@ -2719,7 +2725,7 @@ Active probing check failed: ${failed_check}
   1. Откройте входящие TCP-порты 80 и 443 в firewall сервера и в панели хостера.
   2. Проверьте, что DNS A-запись домена указывает на этот IPv4: ${PUBLIC_IP}.
   3. Если у домена есть AAAA/IPv6, либо настройте IPv6 и listen [::]:443, либо удалите AAAA-запись.
-  4. Проверьте nginx stream: он должен без ssl_preread проксировать весь 443/tcp в 127.0.0.1:1443.
+  4. Проверьте nginx stream: должен быть ssl_preread на 443 и маршруты 127.0.0.1:1443 / 127.0.0.1:8443.
   5. Проверьте, что контейнер telemt запущен и слушает 127.0.0.1:1443, а API доступен на 127.0.0.1:9091.
   6. Полный лог диагностики сохранен тут: ${log_file}
 EOF
@@ -2739,7 +2745,7 @@ What to do:
   1. Allow inbound TCP ports 80 and 443 in the server firewall and provider firewall.
   2. Make sure the domain A record points to this IPv4: ${PUBLIC_IP}.
   3. If the domain has AAAA/IPv6 records, configure IPv6 and listen [::]:443, or remove the AAAA record.
-  4. Check nginx stream: it must proxy all 443/tcp to 127.0.0.1:1443 without ssl_preread.
+  4. Check nginx stream: ssl_preread must listen on 443 and route to 127.0.0.1:1443 / 127.0.0.1:8443.
   5. Check that the telemt container is running, 127.0.0.1:1443 is listening, and API is reachable on 127.0.0.1:9091.
   6. Full diagnostics log: ${log_file}
 EOF
