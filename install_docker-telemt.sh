@@ -1057,7 +1057,7 @@ remove_docker_port_conflict_if_allowed() {
 
   sleep 1
   listeners="$(port_listeners "$port" || true)"
-  if [ -n "$listeners" ] && ! printf '%s\n' "$listeners" | grep -q 'nginx'; then
+  if [ -n "$listeners" ] && ! grep -q 'nginx' <<< "$listeners"; then
     printf '%s\n' "$listeners"
     if is_ru; then
       die "Порт ${port}/tcp все еще занят после удаления Docker-контейнера."
@@ -1073,11 +1073,11 @@ check_port_clean_or_nginx() {
   local listeners
   listeners="$(port_listeners "$port" || true)"
   [ -z "$listeners" ] && return 0
-  if printf '%s\n' "$listeners" | grep -q 'nginx'; then
+  if grep -q 'nginx' <<< "$listeners"; then
     return 0
   fi
   printf '%s\n' "$listeners"
-  if printf '%s\n' "$listeners" | grep -q 'docker-proxy' && ! have docker; then
+  if grep -q 'docker-proxy' <<< "$listeners" && ! have docker; then
     if is_ru; then
       say "Порт ${port}/tcp держит docker-proxy, но Docker CLI не найден. Сначала установлю/починю Docker CLI, чтобы показать контейнер и спросить про удаление."
     else
@@ -2416,7 +2416,7 @@ start_telemt() {
       esac
       seen="${seen}${cid} "
       found=1
-      docker rm -f "$cid" >/dev/null || return 1
+      docker_remove_container_with_retry "$cid" || return 1
     done < <(docker ps -aq --filter "$filter" 2>/dev/null || true)
   done
   if [ "$found" = "1" ]; then
@@ -2426,7 +2426,66 @@ start_telemt() {
       say "Removed the old Telemt container before start to avoid the docker-compose v1 ContainerConfig/removed-image bug."
     fi
   fi
-  compose_cmd up -d --force-recreate
+  compose_up_telemt_with_retry
+}
+
+docker_remove_container_with_retry() {
+  local cid="$1" attempt output state
+  for attempt in 1 2 3; do
+    if output="$(docker rm -f "$cid" 2>&1)"; then
+      return 0
+    fi
+    if grep -Eqi 'zombie|cannot be killed|Could not kill' <<< "$output"; then
+      state="$(docker inspect "$cid" --format 'status={{.State.Status}} running={{.State.Running}} pid={{.State.Pid}} exit={{.State.ExitCode}}' 2>/dev/null || true)"
+      if is_ru; then
+        say "WARN: Docker считает контейнер Telemt zombie и пока не может его удалить; жду и повторяю попытку (${attempt}/3). ${state}"
+      else
+        say "WARN: Docker reports the Telemt container as zombie and cannot remove it yet; waiting and retrying (${attempt}/3). ${state}"
+      fi
+      sleep $((attempt * 5))
+      if ! docker inspect "$cid" >/dev/null 2>&1; then
+        return 0
+      fi
+      continue
+    fi
+    say "WARN: docker rm -f $cid failed: $output"
+    return 1
+  done
+
+  if is_ru; then
+    say "WARN: контейнер Telemt остался zombie после повторных попыток. Обычно помогает: systemctl restart docker, затем повторить --fix-nginx."
+  else
+    say "WARN: the Telemt container is still zombie after retries. Usually this helps: systemctl restart docker, then rerun --fix-nginx."
+  fi
+  return 1
+}
+
+compose_up_telemt_with_retry() {
+  local attempt output
+  for attempt in 1 2; do
+    if output="$(compose_cmd up -d --force-recreate telemt 2>&1)"; then
+      printf '%s\n' "$output"
+      return 0
+    fi
+    printf '%s\n' "$output"
+    if grep -Eqi 'zombie|cannot be killed|Could not kill' <<< "$output"; then
+      if is_ru; then
+        say "WARN: Docker еще держит zombie-процесс Telemt; жду 10 секунд и повторяю recreate."
+      else
+        say "WARN: Docker is still holding a zombie Telemt process; waiting 10 seconds and retrying recreate."
+      fi
+      sleep 10
+      continue
+    fi
+    return 1
+  done
+
+  if is_ru; then
+    say "WARN: Docker не смог пересоздать Telemt после повторной попытки. Если контейнер zombie, перезапустите docker.service и повторите --fix-nginx."
+  else
+    say "WARN: Docker could not recreate Telemt after retry. If the container is zombie, restart docker.service and rerun --fix-nginx."
+  fi
+  return 1
 }
 
 write_firewall_hints() {
