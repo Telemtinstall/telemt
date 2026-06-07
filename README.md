@@ -61,13 +61,19 @@ chmod +x ./build.sh ./install_docker-telemt.sh
 ./install_docker-telemt.sh -lang ru
 ```
 
-Автоматическая установка без вопросов:
+Автоматическая установка: спросить только домен, дальше идти на настройках по умолчанию:
+
+```bash
+./install_docker-telemt.sh --auto -lang ru
+```
+
+Полностью без ввода:
 
 ```bash
 DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang ru
 ```
 
-`--auto` включает ответы по умолчанию и автоматически подтверждает план установки. Домен берется из `DOMAIN`, сохраненного конфига или FQDN hostname сервера. Если домен определить нельзя, установщик сразу остановится с понятной ошибкой и не будет ждать ввода.
+`--auto` включает ответы по умолчанию и автоматически подтверждает план установки. Домен берется из `DOMAIN`, сохраненного конфига или FQDN hostname сервера. Если домен определить нельзя и запуск идет в обычном терминале, установщик спросит только `Домен прокси`, а дальше продолжит сам. В неинтерактивном запуске передайте `DOMAIN=proxy.example.com`.
 
 Скачать только нужные файлы через `wget`:
 
@@ -401,13 +407,19 @@ chmod +x ./build.sh ./install_docker-telemt.sh
 ./install_docker-telemt.sh
 ```
 
-Automatic install without prompts:
+Automatic install: ask only for the domain, then continue with defaults:
+
+```bash
+./install_docker-telemt.sh --auto -lang en
+```
+
+Fully non-interactive install:
 
 ```bash
 DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang en
 ```
 
-`--auto` uses default answers and confirms the install plan automatically. The domain is read from `DOMAIN`, saved config, or the server FQDN hostname. If no domain can be detected, the installer stops with a clear error instead of waiting for input.
+`--auto` uses default answers and confirms the install plan automatically. The domain is read from `DOMAIN`, saved config, or the server FQDN hostname. If no domain can be detected and the installer is running in a normal terminal, it asks only for `Proxy domain` and then continues by itself. In non-interactive runs, pass `DOMAIN=proxy.example.com`.
 
 Download only the required files with `wget`:
 

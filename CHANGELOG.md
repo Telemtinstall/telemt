@@ -6,7 +6,7 @@
 
 - nginx stream on `443/tcp` now works as a plain TCP proxy to Telemt without `ssl_preread`/SNI routing. Telemt itself must receive the first FakeTLS bytes and decide whether to authenticate the MTProxy client or pass unknown clients to the local mask site.
 - Generated proxy links now also include a direct public-IPv4 variant in `/root/telemt-proxy-link-ip.txt` when the public IP is known. The direct link still keeps the configured domain as TLS SNI inside the `ee` secret.
-- Added `--auto` / `-auto` mode for fresh installs. It uses defaults, skips all prompts, confirms the plan automatically, and requires the domain from `DOMAIN`, saved config, or the server FQDN hostname.
+- Added `--auto` / `-auto` mode for fresh installs. It uses defaults, confirms the plan automatically, and asks only for the proxy domain when it cannot read one from `DOMAIN`, saved config, or the server FQDN hostname.
 - Docker doctor/startup now retries Telemt container recreation when Docker temporarily reports a zombie process, and prints a Russian/English recovery hint if the daemon still cannot reap it.
 - Fixed nginx port preflight under `pipefail`: existing nginx listeners on `80/tcp` or `443/tcp` are now correctly accepted instead of being misreported as non-nginx conflicts.
 - Fresh installs now retry the ACME HTTP-01 local and public IPv4 preflight after nginx reload. This avoids false `404` failures when nginx needs a moment to serve the newly written challenge file, while still stopping on real webroot/DNS/firewall problems.

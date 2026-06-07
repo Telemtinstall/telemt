@@ -76,6 +76,7 @@ usage() {
 Примеры:
   ./install_docker-telemt.sh
   ./install_docker-telemt.sh -lang ru
+  ./install_docker-telemt.sh --auto -lang ru
   DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang ru
   ./install_docker-telemt.sh --lang en
   ./install_docker-telemt.sh --update -lang ru
@@ -84,10 +85,11 @@ usage() {
 Опции:
   -lang, --lang   Язык интерфейса установщика: en или ru.
   -auto, --auto   Автоматический режим: взять значения по умолчанию,
-                  не задавать вопросов и автоматически подтвердить план.
+                  автоматически подтвердить план и спросить только домен,
+                  если его нельзя определить заранее.
                   Домен берется из DOMAIN, сохраненного конфига или FQDN
-                  hostname; если домен не найден, установка остановится
-                  с понятной ошибкой.
+                  hostname; в интерактивном терминале будет задан один
+                  вопрос "Домен прокси".
   -update, --update
                   Обновить Docker image Telemt и перезапустить контейнер,
                   сохранив существующие telemt.toml, docker-compose.yml,
@@ -114,6 +116,7 @@ Usage:
 Examples:
   ./install_docker-telemt.sh
   ./install_docker-telemt.sh -lang ru
+  ./install_docker-telemt.sh --auto -lang en
   DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang en
   ./install_docker-telemt.sh --lang en
   ./install_docker-telemt.sh --update -lang ru
@@ -121,10 +124,10 @@ Examples:
 
 Options:
   -lang, --lang   Installer interface language: en or ru.
-  -auto, --auto   Automatic mode: use defaults, ask no questions, and
-                  confirm the plan automatically. Domain is read from DOMAIN,
-                  saved config, or FQDN hostname; if no domain is available,
-                  the installer stops with a clear error.
+  -auto, --auto   Automatic mode: use defaults and confirm the plan
+                  automatically. If no domain can be detected, it asks only
+                  for the proxy domain. Domain is read from DOMAIN, saved
+                  config, or FQDN hostname first.
   -update, --update
                   Update the Telemt Docker image and recreate the container
                   while preserving existing telemt.toml, docker-compose.yml,
@@ -595,17 +598,36 @@ fill_auto_defaults() {
   fi
 
   if [ -z "$DOMAIN" ]; then
-    if is_ru; then
-      die "Автоматический режим не смог определить домен. Запустите так: DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang ru"
+    if [ -t 0 ]; then
+      if is_ru; then
+        printf 'Домен прокси: '
+      else
+        printf 'Proxy domain: '
+      fi
+      if ! read -r DOMAIN; then
+        DOMAIN=""
+      fi
     else
-      die "Automatic mode cannot detect a domain. Run: DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang en"
+      if is_ru; then
+        die "Автоматический режим не смог определить домен. Запустите так: DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang ru"
+      else
+        die "Automatic mode cannot detect a domain. Run: DOMAIN=proxy.example.com ./install_docker-telemt.sh --auto -lang en"
+      fi
+    fi
+  fi
+
+  if [ -z "$DOMAIN" ]; then
+    if is_ru; then
+      die "Домен не указан. Запустите --auto еще раз и введите домен или передайте DOMAIN=proxy.example.com."
+    else
+      die "Domain is empty. Run --auto again and enter the domain or pass DOMAIN=proxy.example.com."
     fi
   fi
 
   if is_ru; then
-    say "Автоматический режим: вопросы пропущены, используются значения по умолчанию."
+    say "Автоматический режим: домен задан, остальные вопросы пропущены, используются значения по умолчанию."
   else
-    say "Automatic mode: prompts are skipped, defaults are used."
+    say "Automatic mode: domain is set, all other prompts are skipped, defaults are used."
   fi
 }
 
@@ -3260,6 +3282,7 @@ main() {
   parse_args "$@"
   need_root
   local requested_script_lang="$SCRIPT_LANG"
+  local auto_defaults_filled="0"
   if [ "$UPDATE_MODE" = "1" ]; then
     load_config_if_exists
     if [ "$SCRIPT_LANG_FROM_CLI" = "1" ]; then
@@ -3280,6 +3303,11 @@ main() {
 
   require_supported_os
 
+  if [ "${RESET_INSTALL_STATE:-0}" = "1" ] && [ "$ASSUME_YES" = "1" ]; then
+    fill_auto_defaults
+    auto_defaults_filled="1"
+  fi
+
   if [ "${RESET_INSTALL_STATE:-0}" = "1" ]; then
     clean_install_reset_if_requested
   else
@@ -3291,7 +3319,9 @@ main() {
   fi
 
   guard_against_accidental_reinstall
-  fill_auto_defaults
+  if [ "$auto_defaults_filled" != "1" ]; then
+    fill_auto_defaults
+  fi
   interactive_inputs
   normalize_domain_input
   normalize_email_input
