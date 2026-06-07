@@ -1020,6 +1020,14 @@ check_port_clean_or_nginx() {
     return 0
   fi
   printf '%s\n' "$listeners"
+  if printf '%s\n' "$listeners" | grep -q 'docker-proxy' && ! have docker; then
+    if is_ru; then
+      say "Порт ${port}/tcp держит docker-proxy, но Docker CLI не найден. Сначала установлю/починю Docker CLI, чтобы показать контейнер и спросить про удаление."
+    else
+      say "Port ${port}/tcp is held by docker-proxy, but Docker CLI was not found. Installing/repairing Docker CLI first so the container can be shown and removal can be confirmed."
+    fi
+    ensure_docker_available
+  fi
   if remove_docker_port_conflict_if_allowed "$port"; then
     return 0
   fi
