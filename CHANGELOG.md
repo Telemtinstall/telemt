@@ -18,6 +18,10 @@
 - Validation now performs a real HTTPS GET against the mask site through the public 443/SNI path and prints `Mask site OK`/`Маскировочная страница OK` when the placeholder is reachable.
 - Package installation now checks which Compose package exists before installing, avoiding misleading `Unable to locate package docker-compose-plugin` output on Debian/Ubuntu builds that package Compose v2 as `docker-compose`.
 - New installs now detect the actual Telemt version inside the Docker image, so `censorship.exclusive_mask` is enabled for `latest` images when the bundled Telemt binary supports it.
+- The Docker installer now refuses unsupported OS versions before package installation: Debian must be 13.x or newer, Ubuntu must be 24.x or newer. Emergency `--fix-nginx` remains available.
+- High-load tuning is now enabled by default for new Docker installs and can still be disabled at the prompt.
+- `build.sh` no longer warns about `TELEMT_VERSION=latest`; the default workflow intentionally builds the current upstream release.
+- If `80/tcp` or `443/tcp` is occupied by a Docker container, the installer now shows the container name/image/ports and asks whether to remove it before continuing.
 
 ## 2026-05-19
 

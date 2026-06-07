@@ -20,7 +20,7 @@ AD_TAG="${AD_TAG:-}"
 USE_MIDDLE_PROXY="${USE_MIDDLE_PROXY:-}"
 ENABLE_LOGS="${ENABLE_LOGS:-no}"
 ENABLE_DOCKER_HARDENING="${ENABLE_DOCKER_HARDENING:-yes}"
-ENABLE_HIGH_LOAD_TUNING="${ENABLE_HIGH_LOAD_TUNING:-no}"
+ENABLE_HIGH_LOAD_TUNING="${ENABLE_HIGH_LOAD_TUNING:-yes}"
 AUTO_BUILD_IMAGE="${AUTO_BUILD_IMAGE:-yes}"
 MASK_SITE_MODE="${MASK_SITE_MODE:-fancy}"
 SCRIPT_LANG="${SCRIPT_LANG:-en}"
@@ -181,6 +181,61 @@ need_root() {
       die "Run as root."
     fi
   fi
+}
+
+require_supported_os() {
+  local os_id version_id pretty major
+
+  [ -r /etc/os-release ] || die "Cannot detect OS: /etc/os-release not found."
+  # shellcheck disable=SC1091
+  source /etc/os-release
+  os_id="$(lower "${ID:-}")"
+  version_id="${VERSION_ID:-}"
+  pretty="${PRETTY_NAME:-$os_id $version_id}"
+
+  case "$os_id" in
+    debian)
+      major="${version_id%%.*}"
+      if ! [[ "$major" =~ ^[0-9]+$ ]]; then
+        if is_ru; then
+          die "Не удалось определить версию Debian ($pretty). Используйте Debian 13.x или новее."
+        else
+          die "Cannot detect Debian version ($pretty). Use Debian 13.x or newer."
+        fi
+      fi
+      if [ "$major" -lt 13 ]; then
+        if is_ru; then
+          die "Неподдерживаемая ОС: $pretty. Docker-установщик Telemt поддерживает Debian 13.x или новее. Обновите сервер до Debian 13.x+ и запустите установщик заново."
+        else
+          die "Unsupported OS: $pretty. The Telemt Docker installer supports Debian 13.x or newer. Upgrade the server to Debian 13.x+ and run the installer again."
+        fi
+      fi
+      ;;
+    ubuntu)
+      major="${version_id%%.*}"
+      if ! [[ "$major" =~ ^[0-9]+$ ]]; then
+        if is_ru; then
+          die "Не удалось определить версию Ubuntu ($pretty). Используйте Ubuntu 24.x или новее."
+        else
+          die "Cannot detect Ubuntu version ($pretty). Use Ubuntu 24.x or newer."
+        fi
+      fi
+      if [ "$major" -lt 24 ]; then
+        if is_ru; then
+          die "Неподдерживаемая ОС: $pretty. Docker-установщик Telemt поддерживает Ubuntu 24.x или новее. Обновите сервер до Ubuntu 24.x+ и запустите установщик заново."
+        else
+          die "Unsupported OS: $pretty. The Telemt Docker installer supports Ubuntu 24.x or newer. Upgrade the server to Ubuntu 24.x+ and run the installer again."
+        fi
+      fi
+      ;;
+    *)
+      if is_ru; then
+        die "Неподдерживаемая ОС: $pretty. Используйте Debian 13.x+ или Ubuntu 24.x+."
+      else
+        die "Unsupported OS: $pretty. Use Debian 13.x+ or Ubuntu 24.x+."
+      fi
+      ;;
+  esac
 }
 
 run_fix_nginx_mode() {
@@ -896,6 +951,66 @@ port_listeners() {
   ss -H -ltnp 2>/dev/null | awk -v p=":$port" '$4 ~ p "$" {print}'
 }
 
+docker_containers_for_public_port() {
+  local port="$1"
+  have docker || return 0
+  docker ps --format '{{.ID}}\t{{.Names}}\t{{.Image}}\t{{.Ports}}' 2>/dev/null |
+    awk -F '\t' -v port="$port" '
+      index($4, ":" port "->") > 0 || index($4, "[::]:" port "->") > 0 || index($4, ":::" port "->") > 0 {
+        print
+      }
+    '
+}
+
+remove_docker_port_conflict_if_allowed() {
+  local port="$1"
+  local containers answer id name image ports listeners
+
+  containers="$(docker_containers_for_public_port "$port" || true)"
+  [ -n "$containers" ] || return 1
+
+  if is_ru; then
+    say "Порт ${port}/tcp уже занят Docker-контейнером:"
+    printf '  %-14s %-24s %-32s %s\n' "ID" "NAME" "IMAGE" "PORTS"
+  else
+    say "Port ${port}/tcp is already used by a Docker container:"
+    printf '  %-14s %-24s %-32s %s\n' "ID" "NAME" "IMAGE" "PORTS"
+  fi
+  while IFS=$'\t' read -r id name image ports; do
+    [ -n "$id" ] || continue
+    printf '  %-14s %-24s %-32s %s\n' "$id" "$name" "$image" "$ports"
+  done <<< "$containers"
+
+  if is_ru; then
+    ask_yes_no answer "Удалить эти Docker-контейнеры и продолжить установку Telemt" "no"
+  else
+    ask_yes_no answer "Remove these Docker containers and continue Telemt installation" "no"
+  fi
+  [ "$answer" = "yes" ] || return 1
+
+  while IFS=$'\t' read -r id name image ports; do
+    [ -n "$id" ] || continue
+    if is_ru; then
+      say "Удаляю Docker-контейнер: ${name} (${id}, ${image})"
+    else
+      say "Removing Docker container: ${name} (${id}, ${image})"
+    fi
+    docker rm -f "$id" >/dev/null || die "Failed to remove Docker container: ${name} (${id})"
+  done <<< "$containers"
+
+  sleep 1
+  listeners="$(port_listeners "$port" || true)"
+  if [ -n "$listeners" ] && ! printf '%s\n' "$listeners" | grep -q 'nginx'; then
+    printf '%s\n' "$listeners"
+    if is_ru; then
+      die "Порт ${port}/tcp все еще занят после удаления Docker-контейнера."
+    else
+      die "Port ${port}/tcp is still busy after removing Docker container."
+    fi
+  fi
+  return 0
+}
+
 check_port_clean_or_nginx() {
   local port="$1"
   local listeners
@@ -905,6 +1020,12 @@ check_port_clean_or_nginx() {
     return 0
   fi
   printf '%s\n' "$listeners"
+  if remove_docker_port_conflict_if_allowed "$port"; then
+    return 0
+  fi
+  if is_ru; then
+    die "Порт ${port}/tcp занят не nginx-процессом. Освободите порт или установите Telemt на чистый сервер."
+  fi
   die "Port $port/tcp is already in use by a non-nginx process. Use a clean server or free the port first."
 }
 
@@ -2675,7 +2796,7 @@ interactive_inputs() {
 Установщик Telemt Docker.
 
 Перед запуском:
-  1. Используйте чистый Debian/Ubuntu сервер.
+  1. Используйте чистый Debian 13.x+ или Ubuntu 24.x+ сервер.
   2. Создайте DNS A-запись: <домен> -> IPv4 этого сервера.
   3. Убедитесь, что порты 80/tcp и 443/tcp доступны из интернета.
   4. Держите build.sh рядом с этим установщиком; image будет собран автоматически, если его нет.
@@ -2709,7 +2830,7 @@ EOF
 Telemt Docker installer.
 
 Before running:
-  1. Use a clean Debian/Ubuntu server.
+  1. Use a clean Debian 13.x+ or Ubuntu 24.x+ server.
   2. Create DNS A record: <domain> -> this server IPv4.
   3. Make sure ports 80/tcp and 443/tcp are reachable.
   4. Keep build.sh next to this installer; the image will be built automatically if missing.
@@ -3011,6 +3132,7 @@ main() {
     if [ "$SCRIPT_LANG_FROM_CLI" = "1" ]; then
       SCRIPT_LANG="$requested_script_lang"
     fi
+    require_supported_os
     run_update_mode
     exit 0
   fi
@@ -3022,6 +3144,8 @@ main() {
     run_fix_nginx_mode
     exit 0
   fi
+
+  require_supported_os
 
   if [ "${RESET_INSTALL_STATE:-0}" = "1" ]; then
     clean_install_reset_if_requested

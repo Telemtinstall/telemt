@@ -137,7 +137,9 @@ docker run --rm --entrypoint /app/telemt telemt-local:latest --version
 
 Заглушка намеренно настраивается как обычный HTTPS без отдельной директивы `http2`. Это совместимо с nginx 1.24 и старыми пакетами Debian/Ubuntu, где строка `http2 on;` вызывает ошибку `unknown directive "http2"`. Для маскировочного сайта HTTP/2 не нужен.
 
-Перед запуском нужен чистый Debian/Ubuntu сервер, A-запись домена на IPv4 сервера и свободные `80/tcp`, `443/tcp`.
+Перед запуском нужен чистый Debian 13.x+ или Ubuntu 24.x+ сервер, A-запись домена на IPv4 сервера и свободные `80/tcp`, `443/tcp`. Debian 12/11 и Ubuntu ниже 24 установщик останавливает сразу, до установки пакетов.
+
+Если `80/tcp` или `443/tcp` уже заняты Docker-контейнером, установщик покажет имя контейнера, image и проброшенные порты, например `whatsapp-proxy facebook/whatsapp_proxy:latest`, и спросит, удалить ли эти контейнеры для продолжения установки Telemt. При ответе `no` установка остановится без удаления.
 
 ### Готовые команды
 
@@ -266,7 +268,7 @@ curl -4 -I --resolve <domain>:443:<server_ipv4> https://<domain>/
 
 Результат сохраняется в `/root/telemt-active-probing-check.txt`. Если обычный HTTPS-запрос через IP сервера не получает корректный ответ, установка останавливается с ошибкой, потому что маскировочный слой работает неправильно. При ошибке скрипт сам печатает диагностику: DNS A/AAAA, слушающие порты, `nginx -t`, наличие stream-конфига, `docker ps`, последние логи Telemt и состояние firewall. Если в выводе есть `BIO_connect:connect error`, чаще всего `443/tcp` закрыт firewall-ом/панелью хостера или nginx stream не слушает публичный `443`.
 
-По умолчанию используется красивая заглушка. Если выбрать `empty`, nginx будет отдавать пустой `index.html` с `200 OK`, без видимого текста. Логи доступа выключены. Docker hardening включен по умолчанию, но его можно отключить. High-load tuning выключен и применяется только после отдельного подтверждения. Дефолтный лимит Telemt поднят до `5000` подключений.
+По умолчанию используется красивая заглушка. Если выбрать `empty`, nginx будет отдавать пустой `index.html` с `200 OK`, без видимого текста. Логи доступа выключены. Docker hardening включен по умолчанию, но его можно отключить. High-load tuning включен по умолчанию, но его можно отключить ответом `no`. Дефолтный лимит Telemt поднят до `5000` подключений.
 
 В конце скрипт сам собирает корректные ссылки для TLS MTProxy:
 
@@ -467,7 +469,9 @@ In this architecture, a normal scanner or browser without the MTProxy key receiv
 
 The mask site is intentionally configured as regular HTTPS without a separate `http2` directive. This stays compatible with nginx 1.24 and older Debian/Ubuntu packages where `http2 on;` fails with `unknown directive "http2"`. HTTP/2 is not needed for the camouflage site.
 
-Before running, use a clean Debian/Ubuntu server, create a DNS A record pointing to the server IPv4, and keep `80/tcp` and `443/tcp` free.
+Before running, use a clean Debian 13.x+ or Ubuntu 24.x+ server, create a DNS A record pointing to the server IPv4, and keep `80/tcp` and `443/tcp` free. Debian 12/11 and Ubuntu versions below 24 are stopped before package installation.
+
+If `80/tcp` or `443/tcp` is already used by a Docker container, the installer shows the container name, image, and published ports, for example `whatsapp-proxy facebook/whatsapp_proxy:latest`, and asks whether to remove those containers before continuing Telemt installation. If you answer `no`, installation stops without removing anything.
 
 ### Ready Commands
 
@@ -596,7 +600,7 @@ curl -4 -I --resolve <domain>:443:<server_ipv4> https://<domain>/
 
 The result is saved to `/root/telemt-active-probing-check.txt`. If a normal HTTPS request through the server IP does not return a valid response, the installer stops with an error because the masking layer is not working correctly. On failure, the script prints diagnostics automatically: DNS A/AAAA, listening ports, `nginx -t`, stream config presence, `docker ps`, recent Telemt logs, and firewall state. If the output contains `BIO_connect:connect error`, TCP `443` is usually blocked by the server/provider firewall or nginx stream is not listening on the public `443`.
 
-The playful placeholder is used by default. If `empty` is selected, nginx serves an empty `index.html` with `200 OK` and no visible text. Access logs are disabled by default. Docker hardening is enabled by default, but can be disabled. High-load tuning is disabled and is applied only after explicit confirmation. The default Telemt connection limit is now `5000`.
+The playful placeholder is used by default. If `empty` is selected, nginx serves an empty `index.html` with `200 OK` and no visible text. Access logs are disabled by default. Docker hardening is enabled by default, but can be disabled. High-load tuning is enabled by default, but can be disabled by answering `no`. The default Telemt connection limit is now `5000`.
 
 At the end, the script generates valid TLS MTProxy links itself:
 

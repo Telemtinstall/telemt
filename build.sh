@@ -76,10 +76,6 @@ main() {
   printf '  image:      %s\n' "$full_image"
   printf '  push:       %s\n' "$PUSH"
 
-  if [ "$TELEMT_VERSION" = "latest" ]; then
-    printf '\nWARNING: TELEMT_VERSION=latest is useful for testing only. Use an exact release tag for production.\n\n'
-  fi
-
   build_args=(
     build
     --pull
