@@ -2,20 +2,53 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT_VERSION="2026-05-06"
+SCRIPT_VERSION="2026-07-14"
 INSTALL_DIR="${INSTALL_DIR:-/opt/telemt-docker}"
 STATE_FILE="${STATE_FILE:-/root/.install_docker_telemt.state}"
 SAVED_CONFIG="${SAVED_CONFIG:-/root/.install_docker_telemt.config}"
 SECRET_FILE="${SECRET_FILE:-$INSTALL_DIR/telemt-secret.env}"
+TELEMT_VERSION_ENV_SET=0
+TELEMT_VERSION_ENV_VALUE=""
+if [ -n "${TELEMT_VERSION+x}" ]; then
+  TELEMT_VERSION_ENV_SET=1
+  TELEMT_VERSION_ENV_VALUE="$TELEMT_VERSION"
+fi
+# Bump only after checking the installer/config compatibility for that Telemt release.
+TELEMT_LATEST_COMPATIBLE_VERSION="${TELEMT_LATEST_COMPATIBLE_VERSION:-3.4.23}"
+OS_RELEASE_FILE="${OS_RELEASE_FILE:-/etc/os-release}"
+TELEMT_DEFAULT_VERSION="${TELEMT_DEFAULT_VERSION:-$TELEMT_LATEST_COMPATIBLE_VERSION}"
+
+SYSTEM_CA_FILE="${SYSTEM_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}"
+TELEMT_OPENSSL_MIN_VERSION="${TELEMT_OPENSSL_MIN_VERSION:-3.5.2}"
+TELEMT_OPENSSL_BUILD_VERSION="${TELEMT_OPENSSL_BUILD_VERSION:-3.5.7}"
+TELEMT_OPENSSL_BUILD_SHA256="${TELEMT_OPENSSL_BUILD_SHA256:-a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8}"
+TELEMT_NGINX_BUILD_VERSION="${TELEMT_NGINX_BUILD_VERSION:-1.31.2}"
+TELEMT_NGINX_BUILD_SHA256="${TELEMT_NGINX_BUILD_SHA256:-af2a957c41da636ddc4f883e4523c6d140b4784dbce42000c364ae5092aa473c}"
+TELEMT_NGINX_OPENSSL_MODE="${TELEMT_NGINX_OPENSSL_MODE:-auto}"
+TELEMT_NGINX_PREFIX="${TELEMT_NGINX_PREFIX:-/opt/telemt-nginx-openssl35}"
+TELEMT_NGINX_BIN="${TELEMT_NGINX_BIN:-/usr/local/sbin/nginx-telemt-openssl35}"
+TELEMT_NGINX_CONF="${TELEMT_NGINX_CONF:-$TELEMT_NGINX_PREFIX/nginx.conf}"
+TELEMT_NGINX_DROPIN="${TELEMT_NGINX_DROPIN:-/etc/systemd/system/nginx.service.d/90-telemt-openssl35.conf}"
 
 DOMAIN="${DOMAIN:-}"
 EMAIL="${EMAIL:-}"
-TELEMT_IMAGE="${TELEMT_IMAGE:-telemt-local:latest}"
-TELEMT_VERSION="${TELEMT_VERSION:-latest}"
+TELEMT_IMAGE="${TELEMT_IMAGE:-telemt-local:${TELEMT_DEFAULT_VERSION}}"
+TELEMT_VERSION="${TELEMT_VERSION:-$TELEMT_DEFAULT_VERSION}"
 TELEMT_USER="${TELEMT_USER:-default}"
 TELEMT_USERS="${TELEMT_USERS:-}"
 TELEMT_LINK_COUNT="${TELEMT_LINK_COUNT:-}"
 TELEMT_MAX_TCP_CONNS="${TELEMT_MAX_TCP_CONNS:-5000}"
+TELEMT_CLIENT_MSS="${TELEMT_CLIENT_MSS:-tspu}"
+TELEMT_CLIENT_MSS_BULK="${TELEMT_CLIENT_MSS_BULK:-1400}"
+TELEMT_SYNLIMIT="${TELEMT_SYNLIMIT:-false}"
+TELEMT_SYNLIMIT_SECONDS="${TELEMT_SYNLIMIT_SECONDS:-60}"
+TELEMT_SYNLIMIT_HITCOUNT="${TELEMT_SYNLIMIT_HITCOUNT:-48}"
+TELEMT_SYNLIMIT_BURST="${TELEMT_SYNLIMIT_BURST:-1}"
+TELEMT_SYNLIMIT_IOS_SECONDS="${TELEMT_SYNLIMIT_IOS_SECONDS:-1}"
+TELEMT_SYNLIMIT_IOS_HITCOUNT="${TELEMT_SYNLIMIT_IOS_HITCOUNT:-12}"
+TELEMT_SYNLIMIT_IOS_BURST="${TELEMT_SYNLIMIT_IOS_BURST:-24}"
+TELEMT_SYNLIMIT_HASHLIMIT_EXPIRE_MS="${TELEMT_SYNLIMIT_HASHLIMIT_EXPIRE_MS:-60000}"
+TELEMT_SYNLIMIT_HASHLIMIT_SIZE="${TELEMT_SYNLIMIT_HASHLIMIT_SIZE:-32768}"
 AD_TAG="${AD_TAG:-}"
 USE_MIDDLE_PROXY="${USE_MIDDLE_PROXY:-}"
 ENABLE_LOGS="${ENABLE_LOGS:-no}"
@@ -33,10 +66,18 @@ CLEAN_INSTALL_MODE="0"
 
 PUBLIC_IP=""
 SCRIPT_LANG_FROM_CLI="0"
+TELEMT_DETECTED_VERSION=""
+TELEMT_DETECTED_VERSION_SOURCE=""
+TELEMT_UPDATE_TARGET_VERSION=""
+TELEMT_UPDATE_IMAGE_BEFORE=""
+TELEMT_UPDATE_IMAGE_AFTER=""
+TELEMT_UPDATE_CONFIG_MISSING=""
 ACME_PREFLIGHT_TOKEN=""
 ACME_PREFLIGHT_EXPECTED=""
 ACME_PREFLIGHT_PATH=""
 ACME_PREFLIGHT_LOG="/root/telemt-acme-http01-check.txt"
+DETECTED_OS_ID=""
+DETECTED_OS_VERSION_ID=""
 
 say() {
   printf '%s\n' "$*"
@@ -91,9 +132,11 @@ usage() {
                   hostname; в интерактивном терминале будет задан один
                   вопрос "Домен прокси".
   -update, --update
-                  Обновить Docker image Telemt и перезапустить контейнер,
-                  сохранив существующие telemt.toml, docker-compose.yml,
-                  секреты, ссылки и nginx-конфиги.
+                  Проанализировать текущую установку, выбрать точную
+                  совместимую версию Telemt, обновить Docker image и
+                  перезапустить контейнер; на Ubuntu также проверить host
+                  nginx/OpenSSL. Сохранить telemt.toml,
+                  docker-compose.yml, секреты, ссылки и nginx-конфиги.
   -fix, --fix-nginx
                   Аварийно починить nginx после ошибки
                   unknown directive "http2" и выполнить Docker doctor.
@@ -105,6 +148,9 @@ usage() {
   RESET_INSTALL_STATE=1
                   Новая установка с нуля: не читать старый сохраненный ввод,
                   удалить старый Telemt secret/config/compose/container.
+  TELEMT_NGINX_OPENSSL_MODE=auto|required|off
+                  Только Ubuntu: проверить реальный host nginx и при
+                  необходимости собрать nginx/OpenSSL 3.5.7. Default: auto.
 EOF
     return 0
   fi
@@ -129,9 +175,11 @@ Options:
                   for the proxy domain. Domain is read from DOMAIN, saved
                   config, or FQDN hostname first.
   -update, --update
-                  Update the Telemt Docker image and recreate the container
-                  while preserving existing telemt.toml, docker-compose.yml,
-                  secrets, links, and nginx configs.
+                  Analyze the current install, choose an exact compatible
+                  Telemt version, update the Docker image, and recreate the
+                  container; on Ubuntu also validate host nginx/OpenSSL.
+                  Preserve telemt.toml, docker-compose.yml, secrets, links,
+                  and nginx configs.
   -fix, --fix-nginx
                   Emergency nginx repair for unknown directive "http2"
                   and Docker doctor checks. Secrets, certificates, and
@@ -143,6 +191,9 @@ Variables:
   RESET_INSTALL_STATE=1
                   Fresh install: do not load old saved input; remove the old
                   Telemt secret/config/compose/container.
+  TELEMT_NGINX_OPENSSL_MODE=auto|required|off
+                  Ubuntu only: validate the real host nginx and build the
+                  isolated nginx/OpenSSL 3.5.7 stack if needed. Default: auto.
 EOF
 }
 
@@ -205,28 +256,30 @@ need_root() {
 require_supported_os() {
   local os_id version_id pretty major
 
-  [ -r /etc/os-release ] || die "Cannot detect OS: /etc/os-release not found."
+  [ -r "$OS_RELEASE_FILE" ] || die "Cannot detect OS: $OS_RELEASE_FILE not found."
   # shellcheck disable=SC1091
-  source /etc/os-release
+  source "$OS_RELEASE_FILE"
   os_id="$(lower "${ID:-}")"
   version_id="${VERSION_ID:-}"
   pretty="${PRETTY_NAME:-$os_id $version_id}"
+  DETECTED_OS_ID="$os_id"
+  DETECTED_OS_VERSION_ID="$version_id"
 
   case "$os_id" in
     debian)
       major="${version_id%%.*}"
       if ! [[ "$major" =~ ^[0-9]+$ ]]; then
         if is_ru; then
-          die "Не удалось определить версию Debian ($pretty). Используйте Debian 13.x или новее."
+          die "Не удалось определить версию Debian ($pretty). Используйте Debian 13.x."
         else
-          die "Cannot detect Debian version ($pretty). Use Debian 13.x or newer."
+          die "Cannot detect Debian version ($pretty). Use Debian 13.x."
         fi
       fi
-      if [ "$major" -lt 13 ]; then
+      if [ "$major" != "13" ]; then
         if is_ru; then
-          die "Неподдерживаемая ОС: $pretty. Docker-установщик Telemt поддерживает Debian 13.x или новее. Обновите сервер до Debian 13.x+ и запустите установщик заново."
+          die "Неподдерживаемая ОС: $pretty. Docker-установщик Telemt поддерживает только Debian 13.x."
         else
-          die "Unsupported OS: $pretty. The Telemt Docker installer supports Debian 13.x or newer. Upgrade the server to Debian 13.x+ and run the installer again."
+          die "Unsupported OS: $pretty. The Telemt Docker installer supports Debian 13.x only."
         fi
       fi
       ;;
@@ -234,24 +287,24 @@ require_supported_os() {
       major="${version_id%%.*}"
       if ! [[ "$major" =~ ^[0-9]+$ ]]; then
         if is_ru; then
-          die "Не удалось определить версию Ubuntu ($pretty). Используйте Ubuntu 24.x или новее."
+          die "Не удалось определить версию Ubuntu ($pretty). Используйте Ubuntu 24.x-26.x."
         else
-          die "Cannot detect Ubuntu version ($pretty). Use Ubuntu 24.x or newer."
+          die "Cannot detect Ubuntu version ($pretty). Use Ubuntu 24.x-26.x."
         fi
       fi
-      if [ "$major" -lt 24 ]; then
+      if [ "$major" -lt 24 ] || [ "$major" -gt 26 ]; then
         if is_ru; then
-          die "Неподдерживаемая ОС: $pretty. Docker-установщик Telemt поддерживает Ubuntu 24.x или новее. Обновите сервер до Ubuntu 24.x+ и запустите установщик заново."
+          die "Неподдерживаемая ОС: $pretty. Docker-установщик Telemt поддерживает Ubuntu 24.x-26.x."
         else
-          die "Unsupported OS: $pretty. The Telemt Docker installer supports Ubuntu 24.x or newer. Upgrade the server to Ubuntu 24.x+ and run the installer again."
+          die "Unsupported OS: $pretty. The Telemt Docker installer supports Ubuntu 24.x-26.x."
         fi
       fi
       ;;
     *)
       if is_ru; then
-        die "Неподдерживаемая ОС: $pretty. Используйте Debian 13.x+ или Ubuntu 24.x+."
+        die "Неподдерживаемая ОС: $pretty. Используйте Debian 13.x или Ubuntu 24.x-26.x."
       else
-        die "Unsupported OS: $pretty. Use Debian 13.x+ or Ubuntu 24.x+."
+        die "Unsupported OS: $pretty. Use Debian 13.x or Ubuntu 24.x-26.x."
       fi
       ;;
   esac
@@ -276,6 +329,7 @@ run_fix_nginx_mode() {
   say
   say "nginx -t before fix:"
   nginx -t 2>&1 || true
+  ensure_ubuntu_nginx_openssl35
 
   changed=0
   while IFS= read -r -d '' file; do
@@ -547,6 +601,45 @@ normalize_mask_site_mode() {
   esac
 }
 
+normalize_client_mss() {
+  local value
+  value="$(lower "$1")"
+  case "$value" in
+    off|none|false|no|нет|0|'') printf 'off' ;;
+    tspu|2in8|extreme-low) printf '%s' "$value" ;;
+    *)
+      if [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -ge 88 ] && [ "$value" -le 4096 ]; then
+        printf '%s' "$value"
+        return 0
+      fi
+      return 1
+      ;;
+  esac
+}
+
+toml_bool() {
+  case "$(normalize_yes_no "$1" 2>/dev/null || true)" in
+    yes) printf 'true' ;;
+    no) printf 'false' ;;
+    *) return 1 ;;
+  esac
+}
+
+normalize_synlimit() {
+  local value
+  value="$(lower "$1")"
+  case "$value" in
+    off|none|false|no|нет|0|'') printf 'false' ;;
+    iptables|nftables) printf '%s' "$value" ;;
+    *) return 1 ;;
+  esac
+}
+
+validate_synlimit_number() {
+  local name="$1" value="$2"
+  [[ "$value" =~ ^[0-9]+$ ]] && [ "$value" -ge 1 ] || die "Bad $name: $value"
+}
+
 ask_mask_site_mode() {
   local value normalized
   if [ "$ASSUME_YES" = "1" ]; then
@@ -802,6 +895,17 @@ validate_inputs() {
   [[ "$TELEMT_LINK_COUNT" =~ ^[0-9]+$ ]] || die "Bad Telemt link count: $TELEMT_LINK_COUNT"
   [ "$TELEMT_LINK_COUNT" -ge 1 ] && [ "$TELEMT_LINK_COUNT" -le 100 ] || die "Telemt link count must be between 1 and 100."
   [[ "$TELEMT_MAX_TCP_CONNS" =~ ^[0-9]+$ ]] || die "Bad connection limit: $TELEMT_MAX_TCP_CONNS"
+  normalize_client_mss "$TELEMT_CLIENT_MSS" >/dev/null || die "Bad TELEMT_CLIENT_MSS: use off, tspu, 2in8, extreme-low, or 88..4096."
+  normalize_client_mss "$TELEMT_CLIENT_MSS_BULK" >/dev/null || die "Bad TELEMT_CLIENT_MSS_BULK: use off, tspu, 2in8, extreme-low, or 88..4096."
+  normalize_synlimit "$TELEMT_SYNLIMIT" >/dev/null || die "Bad TELEMT_SYNLIMIT: use false, iptables, or nftables."
+  validate_synlimit_number TELEMT_SYNLIMIT_SECONDS "$TELEMT_SYNLIMIT_SECONDS"
+  validate_synlimit_number TELEMT_SYNLIMIT_HITCOUNT "$TELEMT_SYNLIMIT_HITCOUNT"
+  validate_synlimit_number TELEMT_SYNLIMIT_BURST "$TELEMT_SYNLIMIT_BURST"
+  validate_synlimit_number TELEMT_SYNLIMIT_IOS_SECONDS "$TELEMT_SYNLIMIT_IOS_SECONDS"
+  validate_synlimit_number TELEMT_SYNLIMIT_IOS_HITCOUNT "$TELEMT_SYNLIMIT_IOS_HITCOUNT"
+  validate_synlimit_number TELEMT_SYNLIMIT_IOS_BURST "$TELEMT_SYNLIMIT_IOS_BURST"
+  validate_synlimit_number TELEMT_SYNLIMIT_HASHLIMIT_EXPIRE_MS "$TELEMT_SYNLIMIT_HASHLIMIT_EXPIRE_MS"
+  validate_synlimit_number TELEMT_SYNLIMIT_HASHLIMIT_SIZE "$TELEMT_SYNLIMIT_HASHLIMIT_SIZE"
   [[ "$TELEMT_IMAGE" =~ ^[A-Za-z0-9._/:@+-]+$ ]] || die "Bad Docker image: $TELEMT_IMAGE"
   [[ "$TELEMT_VERSION" =~ ^[A-Za-z0-9._/@:+-]+$ ]] || die "Bad Telemt version: $TELEMT_VERSION"
   if [ -n "$AD_TAG" ]; then
@@ -820,6 +924,9 @@ validate_inputs() {
   ENABLE_HIGH_LOAD_TUNING="$(normalize_yes_no "$ENABLE_HIGH_LOAD_TUNING")"
   AUTO_BUILD_IMAGE="$(normalize_yes_no "$AUTO_BUILD_IMAGE")"
   MASK_SITE_MODE="$(normalize_mask_site_mode "$MASK_SITE_MODE")"
+  TELEMT_CLIENT_MSS="$(normalize_client_mss "$TELEMT_CLIENT_MSS")"
+  TELEMT_CLIENT_MSS_BULK="$(normalize_client_mss "$TELEMT_CLIENT_MSS_BULK")"
+  TELEMT_SYNLIMIT="$(normalize_synlimit "$TELEMT_SYNLIMIT")"
   SCRIPT_LANG="$(normalize_script_lang "$SCRIPT_LANG")"
 }
 
@@ -834,6 +941,17 @@ TELEMT_USER=$(printf '%q' "$TELEMT_USER")
 TELEMT_USERS=$(printf '%q' "$TELEMT_USERS")
 TELEMT_LINK_COUNT=$(printf '%q' "$TELEMT_LINK_COUNT")
 TELEMT_MAX_TCP_CONNS=$(printf '%q' "$TELEMT_MAX_TCP_CONNS")
+TELEMT_CLIENT_MSS=$(printf '%q' "$TELEMT_CLIENT_MSS")
+TELEMT_CLIENT_MSS_BULK=$(printf '%q' "$TELEMT_CLIENT_MSS_BULK")
+TELEMT_SYNLIMIT=$(printf '%q' "$TELEMT_SYNLIMIT")
+TELEMT_SYNLIMIT_SECONDS=$(printf '%q' "$TELEMT_SYNLIMIT_SECONDS")
+TELEMT_SYNLIMIT_HITCOUNT=$(printf '%q' "$TELEMT_SYNLIMIT_HITCOUNT")
+TELEMT_SYNLIMIT_BURST=$(printf '%q' "$TELEMT_SYNLIMIT_BURST")
+TELEMT_SYNLIMIT_IOS_SECONDS=$(printf '%q' "$TELEMT_SYNLIMIT_IOS_SECONDS")
+TELEMT_SYNLIMIT_IOS_HITCOUNT=$(printf '%q' "$TELEMT_SYNLIMIT_IOS_HITCOUNT")
+TELEMT_SYNLIMIT_IOS_BURST=$(printf '%q' "$TELEMT_SYNLIMIT_IOS_BURST")
+TELEMT_SYNLIMIT_HASHLIMIT_EXPIRE_MS=$(printf '%q' "$TELEMT_SYNLIMIT_HASHLIMIT_EXPIRE_MS")
+TELEMT_SYNLIMIT_HASHLIMIT_SIZE=$(printf '%q' "$TELEMT_SYNLIMIT_HASHLIMIT_SIZE")
 AD_TAG=$(printf '%q' "$AD_TAG")
 USE_MIDDLE_PROXY=$(printf '%q' "$USE_MIDDLE_PROXY")
 ENABLE_LOGS=$(printf '%q' "$ENABLE_LOGS")
@@ -1015,10 +1133,47 @@ write_file_root() {
   chmod "$mode" "$path"
 }
 
+local_ipv4s() {
+  {
+    ip -o -4 addr show 2>/dev/null | awk '{split($4, a, "/"); print a[1]}'
+    hostname -I 2>/dev/null | tr ' ' '\n'
+  } | awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {print}' | sort -u
+}
+
+domain_local_ipv4() {
+  local domain="${DOMAIN:-}" ip locals
+  [ -n "$domain" ] || return 1
+  locals="$(local_ipv4s || true)"
+  [ -n "$locals" ] || return 1
+  while IFS= read -r ip; do
+    [ -n "$ip" ] || continue
+    if grep -Fxq "$ip" <<< "$locals"; then
+      printf '%s\n' "$ip"
+      return 0
+    fi
+  done < <(domain_ipv4s "$domain" || true)
+  return 1
+}
+
 public_ipv4() {
-  curl -4fsS --max-time 10 https://api.ipify.org 2>/dev/null ||
-  curl -4fsS --max-time 10 https://ifconfig.me 2>/dev/null ||
-  curl -4fsS --max-time 10 https://icanhazip.com 2>/dev/null | tr -d '[:space:]'
+  local url ip
+  ip="$(domain_local_ipv4 || true)"
+  if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    printf '%s\n' "$ip"
+    return 0
+  fi
+  for url in \
+    https://api.ipify.org \
+    https://ifconfig.me \
+    https://icanhazip.com
+  do
+    ip="$(curl -4fsS --max-time 10 "$url" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      printf '%s\n' "$ip"
+      return 0
+    fi
+  done
+  return 1
 }
 
 domain_ipv4s() {
@@ -1323,6 +1478,250 @@ install_packages() {
   systemctl enable --now certbot.timer 2>/dev/null || true
 }
 
+configure_system_ca_environment() {
+  [ -s "$SYSTEM_CA_FILE" ] || die "System CA bundle is missing: $SYSTEM_CA_FILE"
+  export SSL_CERT_FILE="$SYSTEM_CA_FILE"
+  export CURL_CA_BUNDLE="$SYSTEM_CA_FILE"
+  [ -d /etc/ssl/certs ] && export SSL_CERT_DIR=/etc/ssl/certs
+}
+
+version_ge() {
+  local current="$1" required="$2"
+  [ "$(printf '%s\n%s\n' "$required" "$current" | sort -V | head -n 1)" = "$required" ]
+}
+
+nginx_openssl_versions() {
+  local nginx_bin="${1:-$(command -v nginx 2>/dev/null || true)}"
+  [ -n "$nginx_bin" ] || return 1
+  "$nginx_bin" -V 2>&1 | grep -oE 'OpenSSL [0-9]+\.[0-9]+\.[0-9]+' | awk '{print $2}' | sort -Vu
+}
+
+nginx_service_binary() {
+  local service_exec
+  service_exec="$(systemctl show nginx.service -p ExecStart --value 2>/dev/null || true)"
+  printf '%s\n' "$service_exec" | grep -oE '/[^ ;]*nginx[^ ;]*' | head -n 1
+}
+
+nginx_stack_versions_at_least() {
+  local required="$1" command_bin service_bin bin versions version
+  command_bin="$(command -v nginx 2>/dev/null || true)"
+  service_bin="$(nginx_service_binary || true)"
+  [ -n "$command_bin" ] || return 1
+  for bin in "$command_bin" "$service_bin"; do
+    [ -n "$bin" ] || continue
+    [ -x "$bin" ] || return 1
+    versions="$(nginx_openssl_versions "$bin" || true)"
+    [ -n "$versions" ] || return 1
+    while IFS= read -r version; do
+      [ -n "$version" ] || continue
+      version_ge "$version" "$required" || return 1
+    done <<< "$versions"
+  done
+}
+
+nginx_has_compatible_openssl() {
+  local nginx_bin="${1:-$(command -v nginx 2>/dev/null || true)}" output versions version service_bin
+  [ -n "$nginx_bin" ] && [ -x "$nginx_bin" ] || return 1
+  output="$("$nginx_bin" -V 2>&1 || true)"
+  printf '%s\n' "$output" | grep -q -- '--with-stream' || return 1
+  printf '%s\n' "$output" | grep -q -- '--with-stream_ssl_preread_module' || return 1
+  versions="$(nginx_openssl_versions "$nginx_bin" || true)"
+  [ -n "$versions" ] || return 1
+  while IFS= read -r version; do
+    [ -n "$version" ] || continue
+    version_ge "$version" "$TELEMT_OPENSSL_MIN_VERSION" || return 1
+  done <<< "$versions"
+
+  service_bin="$(nginx_service_binary || true)"
+  if [ -n "$service_bin" ] && [ "$service_bin" != "$nginx_bin" ]; then
+    [ -x "$service_bin" ] || return 1
+    versions="$(nginx_openssl_versions "$service_bin" || true)"
+    [ -n "$versions" ] || return 1
+    while IFS= read -r version; do
+      [ -n "$version" ] || continue
+      version_ge "$version" "$TELEMT_OPENSSL_MIN_VERSION" || return 1
+    done <<< "$versions"
+  fi
+}
+
+backup_nginx_path() {
+  local path="$1" backup_root="$2"
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    install -d -m 0700 "$backup_root$(dirname "$path")"
+    cp -a "$path" "$backup_root$path"
+  fi
+}
+
+write_custom_nginx_config() {
+  install -d -m 0755 \
+    "$TELEMT_NGINX_PREFIX" /var/log/nginx /var/lib/nginx \
+    /etc/nginx/conf.d /etc/nginx/sites-enabled /etc/nginx/modules-enabled
+  write_file_root "$TELEMT_NGINX_CONF" 0644 root:root <<'EOF'
+user www-data;
+worker_processes auto;
+pid /run/nginx.pid;
+error_log /var/log/nginx/error.log;
+worker_rlimit_nofile 65535;
+
+events {
+    worker_connections 8192;
+    multi_accept on;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    sendfile on;
+    tcp_nopush on;
+    keepalive_timeout 65;
+    server_tokens off;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    access_log /var/log/nginx/access.log;
+    gzip on;
+    include /etc/nginx/conf.d/*.conf;
+    include /etc/nginx/sites-enabled/*;
+}
+
+include /etc/nginx/modules-enabled/*telemt-stream-sni.conf;
+EOF
+}
+
+install_custom_nginx_openssl35() {
+  local build_dir openssl_archive nginx_archive openssl_src nginx_src build_jobs=1 backup_root
+  build_dir="$(mktemp -d /tmp/telemt-nginx-openssl35.XXXXXX)"
+  openssl_archive="$build_dir/openssl-${TELEMT_OPENSSL_BUILD_VERSION}.tar.gz"
+  nginx_archive="$build_dir/nginx-${TELEMT_NGINX_BUILD_VERSION}.tar.gz"
+  openssl_src="$build_dir/openssl-${TELEMT_OPENSSL_BUILD_VERSION}"
+  nginx_src="$build_dir/nginx-${TELEMT_NGINX_BUILD_VERSION}"
+  backup_root="/root/telemt-docker-nginx-openssl-backups/$(date +%Y%m%d-%H%M%S)"
+
+  backup_nginx_path "$TELEMT_NGINX_BIN" "$backup_root"
+  backup_nginx_path "$TELEMT_NGINX_CONF" "$backup_root"
+  backup_nginx_path "$TELEMT_NGINX_DROPIN" "$backup_root"
+  backup_nginx_path /usr/local/sbin/nginx "$backup_root"
+
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y --no-install-recommends build-essential perl zlib1g-dev libpcre2-dev
+
+  if [ -r /proc/meminfo ] && [ "$(awk '/MemTotal/{print $2}' /proc/meminfo)" -ge 1800000 ]; then
+    build_jobs=2
+  fi
+
+  (
+    trap 'rm -rf "$build_dir"' EXIT
+    curl -fL --retry 3 --connect-timeout 20 \
+      "https://github.com/openssl/openssl/releases/download/openssl-${TELEMT_OPENSSL_BUILD_VERSION}/openssl-${TELEMT_OPENSSL_BUILD_VERSION}.tar.gz" \
+      -o "$openssl_archive"
+    printf '%s  %s\n' "$TELEMT_OPENSSL_BUILD_SHA256" "$openssl_archive" | sha256sum -c -
+
+    curl -fL --retry 3 --connect-timeout 20 \
+      "https://nginx.org/download/nginx-${TELEMT_NGINX_BUILD_VERSION}.tar.gz" \
+      -o "$nginx_archive"
+    printf '%s  %s\n' "$TELEMT_NGINX_BUILD_SHA256" "$nginx_archive" | sha256sum -c -
+
+    tar -xzf "$openssl_archive" -C "$build_dir"
+    tar -xzf "$nginx_archive" -C "$build_dir"
+    cd "$nginx_src"
+    ./configure \
+      --prefix="$TELEMT_NGINX_PREFIX" \
+      --sbin-path="$TELEMT_NGINX_BIN" \
+      --conf-path="$TELEMT_NGINX_CONF" \
+      --pid-path=/run/nginx.pid \
+      --lock-path=/run/lock/nginx.lock \
+      --error-log-path=/var/log/nginx/error.log \
+      --http-log-path=/var/log/nginx/access.log \
+      --http-client-body-temp-path=/var/lib/nginx/body \
+      --http-proxy-temp-path=/var/lib/nginx/proxy \
+      --http-fastcgi-temp-path=/var/lib/nginx/fastcgi \
+      --user=www-data \
+      --group=www-data \
+      --with-compat \
+      --with-threads \
+      --with-http_ssl_module \
+      --with-http_v2_module \
+      --with-http_realip_module \
+      --with-http_gzip_static_module \
+      --with-http_stub_status_module \
+      --with-stream \
+      --with-stream_ssl_preread_module \
+      --with-pcre-jit \
+      --with-openssl="$openssl_src" \
+      --with-openssl-opt="no-shared no-tests --openssldir=$TELEMT_NGINX_PREFIX/ssl"
+    make -j"$build_jobs"
+    make install
+  )
+
+  write_custom_nginx_config
+  install -d -m 0755 \
+    /var/lib/nginx/body /var/lib/nginx/proxy /var/lib/nginx/fastcgi \
+    "$(dirname "$TELEMT_NGINX_DROPIN")"
+  ln -sfn "$TELEMT_NGINX_BIN" /usr/local/sbin/nginx
+  hash -r
+
+  write_file_root "$TELEMT_NGINX_DROPIN" 0644 root:root <<EOF
+[Service]
+ExecStartPre=
+ExecStartPre=$TELEMT_NGINX_BIN -t -q -c $TELEMT_NGINX_CONF
+ExecStart=
+ExecStart=$TELEMT_NGINX_BIN -c $TELEMT_NGINX_CONF -g 'daemon on; master_process on;'
+ExecReload=
+ExecReload=$TELEMT_NGINX_BIN -c $TELEMT_NGINX_CONF -g 'daemon on; master_process on;' -s reload
+EOF
+
+  "$TELEMT_NGINX_BIN" -t -c "$TELEMT_NGINX_CONF"
+  systemctl stop nginx 2>/dev/null || true
+  systemctl daemon-reload
+  systemctl enable nginx
+  systemctl start nginx
+  chmod -R go-rwx "$backup_root" 2>/dev/null || true
+  say "Nginx/OpenSSL backup: $backup_root"
+}
+
+ensure_ubuntu_nginx_openssl35() {
+  local current_versions side_version=""
+  [ "$DETECTED_OS_ID" = "ubuntu" ] || return 0
+
+  case "$TELEMT_NGINX_OPENSSL_MODE" in
+    auto|required|off) ;;
+    *) die "TELEMT_NGINX_OPENSSL_MODE must be auto, required, or off." ;;
+  esac
+
+  configure_system_ca_environment
+  if [ -x /opt/openssl-3.5/bin/openssl ]; then
+    side_version="$(/opt/openssl-3.5/bin/openssl version 2>/dev/null | awk '{print $2}' || true)"
+    say "Detected side-by-side OpenSSL: ${side_version:-unknown}. It is not injected into apt, curl, Docker, or the system linker."
+  fi
+
+  if nginx_has_compatible_openssl; then
+    current_versions="$(nginx_openssl_versions | tr '\n' ' ')"
+    if nginx_stack_versions_at_least "$TELEMT_OPENSSL_BUILD_VERSION"; then
+      say "Ubuntu host nginx already uses compatible OpenSSL: ${current_versions:-unknown}."
+      return 0
+    fi
+    say "Ubuntu host nginx OpenSSL ${current_versions:-unknown} is older than security target $TELEMT_OPENSSL_BUILD_VERSION."
+  fi
+
+  if [ "$TELEMT_NGINX_OPENSSL_MODE" = "off" ]; then
+    say "WARN: Ubuntu nginx OpenSSL compatibility build is disabled. The mask site may not support X25519MLKEM768."
+    return 0
+  fi
+
+  say "Building Ubuntu host nginx $TELEMT_NGINX_BUILD_VERSION with isolated OpenSSL $TELEMT_OPENSSL_BUILD_VERSION."
+  say "Telemt remains in Docker; system OpenSSL shared libraries are not replaced."
+  install_custom_nginx_openssl35
+  nginx_has_compatible_openssl "$TELEMT_NGINX_BIN" || die "Custom nginx OpenSSL verification failed."
+}
+
+host_nginx_tls_plan() {
+  if [ "$DETECTED_OS_ID" = "ubuntu" ]; then
+    printf 'Ubuntu host nginx >= OpenSSL %s; auto-build %s/%s' \
+      "$TELEMT_OPENSSL_MIN_VERSION" "$TELEMT_NGINX_BUILD_VERSION" "$TELEMT_OPENSSL_BUILD_VERSION"
+  else
+    printf 'distribution nginx (Debian path unchanged)'
+  fi
+}
+
 install_official_docker_packages() {
   local os_id os_codename docker_codename arch
 
@@ -1402,8 +1801,155 @@ image_name_and_tag() {
   printf '%s\n%s\n' "$name" "$tag"
 }
 
+is_exact_telemt_version() {
+  local version="${1#refs/tags/}"
+  version="${version#v}"
+  [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+}
+
+normalize_exact_telemt_version() {
+  local version="${1#refs/tags/}"
+  version="${version#v}"
+  is_exact_telemt_version "$version" || return 1
+  printf '%s' "$version"
+}
+
+version_from_image_ref() {
+  local parsed tag
+  parsed="$(image_name_and_tag "$1")" || return 1
+  tag="$(printf '%s\n' "$parsed" | sed -n '2p')"
+  normalize_exact_telemt_version "$tag"
+}
+
+image_ref_with_tag() {
+  local image="$1" tag="$2" parsed name
+  parsed="$(image_name_and_tag "$image")" || return 1
+  name="$(printf '%s\n' "$parsed" | sed -n '1p')"
+  printf '%s:%s' "$name" "$tag"
+}
+
+telemt_version_from_text() {
+  sed -n 's/^telemt[[:space:]]\+v\{0,1\}\([0-9][0-9.]*\).*/\1/p' |
+    sed -n '1p'
+}
+
+detect_running_telemt_version() {
+  local output version
+  have docker || return 1
+  docker inspect telemt >/dev/null 2>&1 || return 1
+  output="$(docker exec telemt /app/telemt --version 2>/dev/null || true)"
+  version="$(printf '%s\n' "$output" | telemt_version_from_text)"
+  if is_exact_telemt_version "$version"; then
+    printf '%s' "$version"
+    return 0
+  fi
+  return 1
+}
+
+detect_image_telemt_version() {
+  local image="$1" output version
+  [ -n "$image" ] || return 1
+  have docker || return 1
+  docker image inspect "$image" >/dev/null 2>&1 || return 1
+  output="$(docker run --rm --entrypoint /app/telemt "$image" --version 2>/dev/null || true)"
+  version="$(printf '%s\n' "$output" | telemt_version_from_text)"
+  if is_exact_telemt_version "$version"; then
+    printf '%s' "$version"
+    return 0
+  fi
+  return 1
+}
+
+detect_current_telemt_version() {
+  local existing_image saved_version saved_source version
+
+  TELEMT_DETECTED_VERSION=""
+  TELEMT_DETECTED_VERSION_SOURCE=""
+
+  if version="$(detect_running_telemt_version)"; then
+    TELEMT_DETECTED_VERSION="$version"
+    TELEMT_DETECTED_VERSION_SOURCE="running container"
+    return 0
+  fi
+
+  existing_image="$(compose_image_from_file "$INSTALL_DIR/docker-compose.yml" || true)"
+  if [ -n "$existing_image" ] && version="$(detect_image_telemt_version "$existing_image")"; then
+    TELEMT_DETECTED_VERSION="$version"
+    TELEMT_DETECTED_VERSION_SOURCE="compose image binary"
+    return 0
+  fi
+
+  if [ -n "$existing_image" ] && version="$(version_from_image_ref "$existing_image")"; then
+    TELEMT_DETECTED_VERSION="$version"
+    TELEMT_DETECTED_VERSION_SOURCE="compose image tag"
+    return 0
+  fi
+
+  saved_version=""
+  saved_source=""
+  if [ "$TELEMT_VERSION_ENV_SET" = "1" ]; then
+    saved_version="$TELEMT_VERSION_ENV_VALUE"
+    saved_source="TELEMT_VERSION env"
+  elif [ -f "$SAVED_CONFIG" ]; then
+    saved_version="$(
+      awk -F= '$1 == "TELEMT_VERSION" {
+        value=substr($0, index($0, "=") + 1)
+        gsub(/^'\''|'\''$/, "", value)
+        gsub(/^"|"$/, "", value)
+        print value
+        exit
+      }' "$SAVED_CONFIG" 2>/dev/null || true
+    )"
+    saved_source="saved installer config"
+  fi
+
+  if [ -n "$saved_version" ] && version="$(normalize_exact_telemt_version "$saved_version" 2>/dev/null)"; then
+    TELEMT_DETECTED_VERSION="$version"
+    TELEMT_DETECTED_VERSION_SOURCE="$saved_source"
+    return 0
+  fi
+
+  return 1
+}
+
+resolve_update_target_version() {
+  local requested version
+
+  requested=""
+  if [ "$TELEMT_VERSION_ENV_SET" = "1" ]; then
+    requested="$TELEMT_VERSION_ENV_VALUE"
+  fi
+
+  if [ -n "$requested" ]; then
+    if version="$(normalize_exact_telemt_version "$requested" 2>/dev/null)"; then
+      TELEMT_UPDATE_TARGET_VERSION="$version"
+      TELEMT_VERSION="$version"
+      return 0
+    fi
+    if [ "$(lower "$requested")" = "latest" ]; then
+      if is_ru; then
+        say "WARN: TELEMT_VERSION=latest в --update не используется; беру проверенную совместимую версию $TELEMT_LATEST_COMPATIBLE_VERSION."
+      else
+        say "WARN: TELEMT_VERSION=latest is ignored in --update; using checked compatible version $TELEMT_LATEST_COMPATIBLE_VERSION."
+      fi
+    else
+      die "Bad TELEMT_VERSION for --update: use an exact release tag like $TELEMT_LATEST_COMPATIBLE_VERSION, not '$requested'."
+    fi
+  fi
+
+  TELEMT_UPDATE_TARGET_VERSION="$TELEMT_LATEST_COMPATIBLE_VERSION"
+  TELEMT_VERSION="$TELEMT_UPDATE_TARGET_VERSION"
+  is_exact_telemt_version "$TELEMT_UPDATE_TARGET_VERSION" ||
+    die "Bad TELEMT_LATEST_COMPATIBLE_VERSION: $TELEMT_UPDATE_TARGET_VERSION"
+}
+
+resolve_update_image_ref() {
+  local image="$1" target="$2"
+  image_ref_with_tag "$image" "$target"
+}
+
 build_local_image() {
-  local script_dir build_script parsed image_name image_tag
+  local script_dir build_script parsed image_name image_tag upstream_version
   script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
   build_script="${BUILD_SCRIPT:-$script_dir/build.sh}"
 
@@ -1413,44 +1959,70 @@ build_local_image() {
   parsed="$(image_name_and_tag "$TELEMT_IMAGE")" || die "Cannot auto-build digest-pinned image: $TELEMT_IMAGE"
   image_name="$(printf '%s\n' "$parsed" | sed -n '1p')"
   image_tag="$(printf '%s\n' "$parsed" | sed -n '2p')"
+  upstream_version="${TELEMT_BUILD_VERSION:-$TELEMT_VERSION}"
+  if [ "$upstream_version" = "latest" ] && [ "$image_tag" = "latest" ]; then
+    upstream_version="$TELEMT_DEFAULT_VERSION"
+  elif [ "$upstream_version" = "$TELEMT_DEFAULT_VERSION" ] && is_exact_telemt_version "$image_tag"; then
+    upstream_version="$image_tag"
+  fi
 
   say "Building Telemt Docker image automatically:"
   say "  image:   ${image_name}:${image_tag}"
-  say "  version: ${image_tag}"
+  say "  version: ${upstream_version}"
   (
     cd "$(dirname "$build_script")"
-    IMAGE="$image_name" TELEMT_VERSION="$image_tag" NO_CACHE="$NO_CACHE" PUSH=0 "$build_script"
+    IMAGE="$image_name" IMAGE_TAG="$image_tag" TELEMT_VERSION="$upstream_version" NO_CACHE="$NO_CACHE" PUSH=0 "$build_script"
   )
 }
 
 refresh_docker_image_for_update() {
-  local parsed image_name image_tag old_no_cache
+  local parsed image_name image_tag old_no_cache target_version target_image source_image
 
-  if [[ "$TELEMT_IMAGE" != telemt-local:* ]]; then
-    say "Pulling Docker image for update: $TELEMT_IMAGE"
-    docker pull "$TELEMT_IMAGE"
+  target_version="${TELEMT_UPDATE_TARGET_VERSION:-$TELEMT_LATEST_COMPATIBLE_VERSION}"
+  source_image="$TELEMT_IMAGE"
+  target_image="$(resolve_update_image_ref "$TELEMT_IMAGE" "$target_version")" ||
+    die "Cannot update digest-pinned image safely: $TELEMT_IMAGE"
+
+  TELEMT_UPDATE_IMAGE_BEFORE="$source_image"
+  TELEMT_UPDATE_IMAGE_AFTER="$target_image"
+
+  if [[ "$target_image" != telemt-local:* ]]; then
+    say "Pulling Docker image for update: $target_image"
+    docker pull "$target_image"
+    if [ "$target_image" != "$source_image" ]; then
+      is_ru && say "Переключаю compose image на точный tag: $source_image -> $target_image" ||
+        say "Switching compose image to an exact tag: $source_image -> $target_image"
+      patch_compose_image_ref "$target_image"
+    fi
+    TELEMT_IMAGE="$target_image"
     return 0
   fi
 
+  TELEMT_IMAGE="$target_image"
   parsed="$(image_name_and_tag "$TELEMT_IMAGE")" || die "Cannot rebuild digest-pinned image: $TELEMT_IMAGE"
   image_name="$(printf '%s\n' "$parsed" | sed -n '1p')"
   image_tag="$(printf '%s\n' "$parsed" | sed -n '2p')"
 
   old_no_cache="$NO_CACHE"
-  if [ "$image_tag" = "latest" ]; then
-    NO_CACHE=1
-  fi
-  TELEMT_VERSION="$image_tag"
-  say "Rebuilding local Telemt image for update: ${image_name}:${image_tag}"
-  build_local_image
+  NO_CACHE=1
+  TELEMT_VERSION="$target_version"
+  say "Rebuilding local Telemt image for update: ${image_name}:${image_tag} from Telemt ${target_version}"
+  TELEMT_BUILD_VERSION="$target_version" build_local_image
   NO_CACHE="$old_no_cache"
+  docker image inspect "$TELEMT_IMAGE" >/dev/null 2>&1 ||
+    die "Image build finished, but Docker cannot inspect $TELEMT_IMAGE."
+  if [ "$target_image" != "$source_image" ]; then
+    is_ru && say "Переключаю compose image на точный tag: $source_image -> $target_image" ||
+      say "Switching compose image to an exact tag: $source_image -> $target_image"
+    patch_compose_image_ref "$target_image"
+  fi
 }
 
 check_docker_image() {
   local old_no_cache
   say "Checking Docker image: $TELEMT_IMAGE"
-  if [ "$CLEAN_INSTALL_MODE" = "1" ] && [[ "$TELEMT_IMAGE" == telemt-local:latest ]]; then
-    say "Clean install requested: rebuilding telemt-local:latest instead of reusing the old local image."
+  if [ "$CLEAN_INSTALL_MODE" = "1" ] && [[ "$TELEMT_IMAGE" == telemt-local:* ]]; then
+    say "Clean install requested: rebuilding $TELEMT_IMAGE instead of reusing the old local image."
     old_no_cache="$NO_CACHE"
     NO_CACHE=1
     build_local_image
@@ -1540,7 +2112,7 @@ load_existing_secret_for_links() {
           gsub(/^"|"$/, "", key)
           gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
           gsub(/^"|"$/, "", val)
-          if (key == user && val ~ /^[A-Fa-f0-9]{32}$/) {
+          if (key == user && length(val) == 32 && val !~ /[^A-Fa-f0-9]/) {
             print val
             exit
           }
@@ -1602,7 +2174,7 @@ write_proxy_links() {
           gsub(/^"|"$/, "", key)
           gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
           gsub(/^"|"$/, "", val)
-          if (key != "" && val ~ /^[A-Fa-f0-9]{32}$/) print key, val
+          if (key != "" && length(val) == 32 && val !~ /[^A-Fa-f0-9]/) print key, val
         }
       ' "$INSTALL_DIR/telemt.toml"
     )
@@ -1665,24 +2237,53 @@ telemt_image_version() {
     head -n 1
 }
 
-telemt_version_supports_exclusive_mask() {
+telemt_effective_version() {
   local version="${TELEMT_VERSION:-latest}"
-  local major minor patch
 
   version="${version#v}"
   if [ "$version" = "latest" ] || ! [[ "$version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
     version="$(telemt_image_version || true)"
   fi
+  if ! [[ "$version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]]; then
+    version="$TELEMT_DEFAULT_VERSION"
+  fi
+  printf '%s' "$version"
+}
+
+telemt_version_at_least() {
+  local wanted_major="$1" wanted_minor="$2" wanted_patch="$3"
+  local version major minor patch
+  version="$(telemt_effective_version)"
   [[ "$version" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || return 1
   IFS=. read -r major minor patch <<< "$version"
   minor="${minor:-0}"
   patch="${patch:-0}"
 
-  (( major > 3 )) && return 0
-  (( major < 3 )) && return 1
-  (( minor > 4 )) && return 0
-  (( minor < 4 )) && return 1
-  (( patch >= 12 ))
+  (( major > wanted_major )) && return 0
+  (( major < wanted_major )) && return 1
+  (( minor > wanted_minor )) && return 0
+  (( minor < wanted_minor )) && return 1
+  (( patch >= wanted_patch ))
+}
+
+telemt_version_supports_exclusive_mask() {
+  telemt_version_at_least 3 4 12
+}
+
+telemt_version_supports_user_enabled() {
+  telemt_version_at_least 3 4 14
+}
+
+telemt_version_supports_client_mss() {
+  telemt_version_at_least 3 4 15
+}
+
+telemt_version_supports_client_mss_bulk() {
+  telemt_version_at_least 3 4 19
+}
+
+telemt_version_supports_synlimit() {
+  telemt_version_at_least 3 4 18
 }
 
 write_mask_site_index() {
@@ -2226,19 +2827,28 @@ write_telemt_config() {
   install -d -m 0777 "$INSTALL_DIR/runtime"
 
   local middle_bool="false"
-  local users_array user secret
+  local users_array user secret client_mss client_mss_bulk synlimit_value
   [ "$USE_MIDDLE_PROXY" = "yes" ] && middle_bool="true"
   normalize_telemt_users
   users_array="$(telemt_users_toml_array)"
+  client_mss="$(normalize_client_mss "$TELEMT_CLIENT_MSS")"
+  client_mss_bulk="$(normalize_client_mss "$TELEMT_CLIENT_MSS_BULK")"
+  synlimit_value="$(normalize_synlimit "$TELEMT_SYNLIMIT")"
 
   {
     cat <<EOF
 show_link = ${users_array}
 
 [general]
+data_path = "/run/telemt"
+quota_state_path = "/run/telemt/telemt.limit.json"
 fast_mode = true
 use_middle_proxy = ${middle_bool}
 config_strict = true
+beobachten = true
+beobachten_minutes = 10
+beobachten_flush_secs = 15
+beobachten_file = "/run/telemt/beobachten.txt"
 log_level = "silent"
 EOF
     if [ -n "$AD_TAG" ]; then
@@ -2268,7 +2878,14 @@ listen_addr_ipv6 = "::1"
 proxy_protocol = false
 metrics_listen = "127.0.0.1:9090"
 metrics_whitelist = ["127.0.0.1/32", "::1/128"]
-
+EOF
+    if telemt_version_supports_client_mss && [ "$client_mss" != "off" ]; then
+      printf 'client_mss = "%s"\n' "$client_mss"
+    fi
+    if telemt_version_supports_client_mss_bulk && [ "$client_mss" != "off" ] && [ "$client_mss_bulk" != "off" ]; then
+      printf 'client_mss_bulk = "%s"\n' "$client_mss_bulk"
+    fi
+    cat <<EOF
 [server.api]
 enabled = true
 listen = "127.0.0.1:9091"
@@ -2281,12 +2898,32 @@ minimal_runtime_cache_ttl_ms = 1000
 [[server.listeners]]
 ip = "127.0.0.1"
 announce = "${PUBLIC_IP}"
-
+EOF
+    if telemt_version_supports_client_mss && [ "$client_mss" != "off" ]; then
+      printf 'client_mss = "%s"\n' "$client_mss"
+    fi
+    if telemt_version_supports_synlimit; then
+      if [ "$synlimit_value" = "false" ]; then
+        printf 'synlimit = false\n'
+      else
+        printf 'synlimit = "%s"\n' "$synlimit_value"
+        printf 'synlimit_seconds = %s\n' "$TELEMT_SYNLIMIT_SECONDS"
+        printf 'synlimit_hitcount = %s\n' "$TELEMT_SYNLIMIT_HITCOUNT"
+        printf 'synlimit_burst = %s\n' "$TELEMT_SYNLIMIT_BURST"
+        printf 'synlimit_ios_seconds = %s\n' "$TELEMT_SYNLIMIT_IOS_SECONDS"
+        printf 'synlimit_ios_hitcount = %s\n' "$TELEMT_SYNLIMIT_IOS_HITCOUNT"
+        printf 'synlimit_ios_burst = %s\n' "$TELEMT_SYNLIMIT_IOS_BURST"
+        printf 'synlimit_hashlimit_expire_ms = %s\n' "$TELEMT_SYNLIMIT_HASHLIMIT_EXPIRE_MS"
+        printf 'synlimit_hashlimit_size = %s\n' "$TELEMT_SYNLIMIT_HASHLIMIT_SIZE"
+      fi
+    fi
+    cat <<EOF
 [censorship]
 tls_domain = "${DOMAIN}"
 mask = true
 mask_host = "127.0.0.1"
 mask_port = 8443
+mask_dynamic = false
 tls_emulation = true
 tls_front_dir = "/tmp/telemt-tlsfront"
 tls_full_cert_ttl_secs = 0
@@ -2315,8 +2952,18 @@ EOF
         secret="$(openssl rand -hex 16)"
       fi
       printf '"%s" = "%s"\n' "$user" "$secret"
-    done < <(telemt_users_list)
-    cat <<EOF
+	    done < <(telemt_users_list)
+    if telemt_version_supports_user_enabled; then
+      cat <<EOF
+
+[access.user_enabled]
+EOF
+      while IFS= read -r user; do
+        [ -n "$user" ] || continue
+        printf '"%s" = true\n' "$user"
+      done < <(telemt_users_list)
+    fi
+	    cat <<EOF
 [access.user_max_tcp_conns]
 EOF
     while IFS= read -r user; do
@@ -2328,6 +2975,8 @@ EOF
 type = "direct"
 enabled = true
 weight = 10
+ipv4 = true
+ipv6 = false
 EOF
   } > "$INSTALL_DIR/telemt.toml"
   chown 65532:65532 "$INSTALL_DIR/telemt.toml"
@@ -2372,6 +3021,7 @@ ensure_telemt_image_available() {
 write_compose() {
   local logging_block
   local hardening_block
+  install -d -m 0750 "$INSTALL_DIR"
   if [ "$ENABLE_LOGS" = "yes" ]; then
     logging_block='
     logging:
@@ -2399,11 +3049,14 @@ write_compose() {
       - ALL
     read_only: true
     tmpfs:
-      - /tmp:rw,nosuid,nodev,noexec,size=16m'
+      - /tmp:rw,nosuid,nodev,noexec,size=16m
+      - /run/telemt:rw,nosuid,nodev,noexec,size=32m'
   else
     hardening_block='
     healthcheck:
-      disable: true'
+      disable: true
+    tmpfs:
+      - /run/telemt:rw,nosuid,nodev,noexec,size=32m'
   fi
 
   cat > "$INSTALL_DIR/docker-compose.yml" <<EOF
@@ -2429,24 +3082,17 @@ EOF
 }
 
 start_telemt() {
-  local cid seen found filter
+  local cid found
   cd "$INSTALL_DIR"
   ensure_compose_available || return 1
   compose_cmd config >/dev/null || return 1
   ensure_telemt_image_available || return 1
-  seen=" "
   found=0
-  for filter in "name=telemt" "label=com.docker.compose.service=telemt"; do
-    while IFS= read -r cid; do
-      [ -n "$cid" ] || continue
-      case "$seen" in
-        *" $cid "*) continue ;;
-      esac
-      seen="${seen}${cid} "
-      found=1
-      docker_remove_container_with_retry "$cid" || return 1
-    done < <(docker ps -aq --filter "$filter" 2>/dev/null || true)
-  done
+  while IFS= read -r cid; do
+    [ -n "$cid" ] || continue
+    found=1
+    docker_remove_container_with_retry "$cid" || return 1
+  done < <(telemt_container_ids || true)
   if [ "$found" = "1" ]; then
     if is_ru; then
       say "Удалил старый контейнер Telemt перед запуском, чтобы обойти ошибку docker-compose v1 ContainerConfig/removed image."
@@ -2455,6 +3101,16 @@ start_telemt() {
     fi
   fi
   compose_up_telemt_with_retry
+}
+
+telemt_container_ids() {
+  local cid name
+  docker ps -aq --filter "name=telemt" 2>/dev/null | while IFS= read -r cid; do
+    [ -n "$cid" ] || continue
+    name="$(docker inspect -f '{{.Name}}' "$cid" 2>/dev/null | sed 's#^/##' || true)"
+    [ "$name" = "telemt" ] && printf '%s\n' "$cid"
+  done
+  return 0
 }
 
 docker_remove_container_with_retry() {
@@ -2752,11 +3408,53 @@ EOF
   die "Active probing failed. See diagnostics above."
 }
 
+print_telemt_container_diagnostics() {
+  say
+  if is_ru; then
+    say "Диагностика Docker/Telemt:"
+  else
+    say "Docker/Telemt diagnostics:"
+  fi
+
+  docker ps -a --filter "name=telemt" 2>&1 || true
+
+  if [ -f "$INSTALL_DIR/docker-compose.yml" ]; then
+    say
+    say "$INSTALL_DIR/docker-compose.yml:"
+    sed -n '1,220p' "$INSTALL_DIR/docker-compose.yml" 2>&1 || true
+  fi
+
+  say
+  say "telemt logs:"
+  if docker compose version >/dev/null 2>&1; then
+    (cd "$INSTALL_DIR" && docker compose logs --no-color --tail=120 telemt) 2>&1 || docker logs --tail 120 telemt 2>&1 || true
+  elif have docker-compose; then
+    (cd "$INSTALL_DIR" && docker-compose logs --tail=120 telemt) 2>&1 || docker logs --tail 120 telemt 2>&1 || true
+  else
+    docker logs --tail 120 telemt 2>&1 || true
+  fi
+}
+
 validate_install() {
   sleep 8
   ss -lntp | grep -E ':(80|443|8443|1443|9090|9091)\b' || true
-  curl -fsS "http://127.0.0.1:9091/v1/users" | tee /tmp/telemt-users.json >/dev/null
-  grep -q '"ok":true' /tmp/telemt-users.json
+  if ! curl -fsS "http://127.0.0.1:9091/v1/users" | tee /tmp/telemt-users.json >/dev/null; then
+    print_telemt_container_diagnostics
+    if is_ru; then
+      die "Telemt API не отвечает на 127.0.0.1:9091. Смотри диагностику контейнера выше."
+    else
+      die "Telemt API does not respond on 127.0.0.1:9091. See container diagnostics above."
+    fi
+  fi
+  if ! grep -q '"ok":true' /tmp/telemt-users.json; then
+    cat /tmp/telemt-users.json >&2 || true
+    print_telemt_container_diagnostics
+    if is_ru; then
+      die "Telemt API ответил, но формат ответа неожиданный."
+    else
+      die "Telemt API responded, but the response format was unexpected."
+    fi
+  fi
   write_proxy_links /tmp/telemt-users.json
 
   local probe_log="/root/telemt-active-probing-check.txt"
@@ -2799,11 +3497,15 @@ print_plan() {
   пользователи Telemt: $(printf '%s' "$TELEMT_USERS" | tr ',' ' ')
   ссылок MTProxy:     $TELEMT_LINK_COUNT
   лимит подключений:  $TELEMT_MAX_TCP_CONNS
+  client_mss:         $TELEMT_CLIENT_MSS
+  client_mss_bulk:    $TELEMT_CLIENT_MSS_BULK
+  synlimit:           $TELEMT_SYNLIMIT
   ad_tag:             $([ -n "$AD_TAG" ] && printf yes || printf no)
   middle_proxy:       $USE_MIDDLE_PROXY
   логи включены:      $ENABLE_LOGS
   Docker hardening:   $ENABLE_DOCKER_HARDENING
   high-load tuning:   $ENABLE_HIGH_LOAD_TUNING
+  host nginx TLS:     $(host_nginx_tls_plan)
 
 Установщик настроит:
   - TLS-Fronting + TCP-Splitting схему для своего домена
@@ -2827,6 +3529,7 @@ Docker hardening включит:
   - cap_drop: ALL
   - no-new-privileges
   - tmpfs для /tmp
+  - tmpfs для /run/telemt
   - Docker healthcheck
 
 CPU/RAM/PID лимиты не задаются: контейнер не будет искусственно ограничен при загрузке медиа.
@@ -2869,11 +3572,15 @@ Install plan:
   Telemt users:       $(printf '%s' "$TELEMT_USERS" | tr ',' ' ')
   MTProxy links:      $TELEMT_LINK_COUNT
   connection limit:   $TELEMT_MAX_TCP_CONNS
+  client_mss:         $TELEMT_CLIENT_MSS
+  client_mss_bulk:    $TELEMT_CLIENT_MSS_BULK
+  synlimit:           $TELEMT_SYNLIMIT
   ad_tag:             $([ -n "$AD_TAG" ] && printf yes || printf no)
   middle_proxy:       $USE_MIDDLE_PROXY
   logs enabled:       $ENABLE_LOGS
   Docker hardening:   $ENABLE_DOCKER_HARDENING
   high-load tuning:   $ENABLE_HIGH_LOAD_TUNING
+  host nginx TLS:     $(host_nginx_tls_plan)
 
 This installer will configure:
   - TLS-Fronting + TCP-Splitting for your own domain
@@ -2897,6 +3604,7 @@ Docker hardening will enable:
   - cap_drop: ALL
   - no-new-privileges
   - tmpfs for /tmp
+  - tmpfs for /run/telemt
   - Docker healthcheck
 
 CPU/RAM/PID limits are not set: the container is not artificially throttled while loading media.
@@ -2981,9 +3689,12 @@ EOF
       extra_user=""
       ask_default extra_user "Имя пользователя Telemt #${i}" "${existing_user:-user${i}}"
       append_telemt_user "$extra_user"
-    done
-    ask_default TELEMT_MAX_TCP_CONNS "Максимум подключений Telemt" "$TELEMT_MAX_TCP_CONNS"
-    ask_default AD_TAG "MTProxy ad_tag, Enter = пропустить" "$AD_TAG"
+	    done
+	    ask_default TELEMT_MAX_TCP_CONNS "Максимум подключений Telemt" "$TELEMT_MAX_TCP_CONNS"
+	    ask_default TELEMT_CLIENT_MSS "TCP MSS для Telemt listener: off/tspu/2in8/extreme-low/88..4096" "$TELEMT_CLIENT_MSS"
+	    ask_default TELEMT_CLIENT_MSS_BULK "TCP MSS для bulk-фазы после handshake: off/tspu/2in8/extreme-low/88..4096" "$TELEMT_CLIENT_MSS_BULK"
+	    ask_default TELEMT_SYNLIMIT "SYN limiter Telemt listener: false/iptables/nftables" "$TELEMT_SYNLIMIT"
+	    ask_default AD_TAG "MTProxy ad_tag, Enter = пропустить" "$AD_TAG"
   else
     cat <<'EOF'
 Telemt Docker installer.
@@ -3016,9 +3727,12 @@ EOF
       extra_user=""
       ask_default extra_user "Telemt user name #${i}" "${existing_user:-user${i}}"
       append_telemt_user "$extra_user"
-    done
-    ask_default TELEMT_MAX_TCP_CONNS "Max Telemt connections" "$TELEMT_MAX_TCP_CONNS"
-    ask_default AD_TAG "MTProxy ad_tag, Enter = skip" "$AD_TAG"
+	    done
+	    ask_default TELEMT_MAX_TCP_CONNS "Max Telemt connections" "$TELEMT_MAX_TCP_CONNS"
+	    ask_default TELEMT_CLIENT_MSS "Telemt listener TCP MSS: off/tspu/2in8/extreme-low/88..4096" "$TELEMT_CLIENT_MSS"
+	    ask_default TELEMT_CLIENT_MSS_BULK "Telemt bulk-phase TCP MSS after handshake: off/tspu/2in8/extreme-low/88..4096" "$TELEMT_CLIENT_MSS_BULK"
+	    ask_default TELEMT_SYNLIMIT "Telemt listener SYN limiter: false/iptables/nftables" "$TELEMT_SYNLIMIT"
+	    ask_default AD_TAG "MTProxy ad_tag, Enter = skip" "$AD_TAG"
   fi
 
   if [ -z "$USE_MIDDLE_PROXY" ]; then
@@ -3107,6 +3821,205 @@ compose_image_from_file() {
   ' "$file"
 }
 
+patch_compose_image_ref() {
+  local new_image="$1"
+  local compose_file="$INSTALL_DIR/docker-compose.yml"
+  [ -f "$compose_file" ] || return 0
+
+  python3 - "$compose_file" "$new_image" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+new_image = sys.argv[2]
+lines = path.read_text().splitlines(True)
+changed = False
+
+for i, line in enumerate(lines):
+    if re.match(r'^\s*image:\s*', line):
+        indent = line[: len(line) - len(line.lstrip())]
+        replacement = f"{indent}image: {new_image}\n"
+        if line != replacement:
+            lines[i] = replacement
+            changed = True
+        break
+
+if changed:
+    path.write_text("".join(lines))
+PY
+}
+
+build_update_config_gap_report() {
+  local config_file="$INSTALL_DIR/telemt.toml"
+  local compose_file="$INSTALL_DIR/docker-compose.yml"
+  local client_mss client_mss_bulk support_exclusive_mask=0 support_user_enabled=0 support_client_mss=0 support_client_mss_bulk=0 support_synlimit=0
+
+  [ -f "$config_file" ] || return 0
+  if ! have python3; then
+    printf 'python3 unavailable before update; detailed config gap analysis will run after package check'
+    return 0
+  fi
+
+  telemt_version_supports_exclusive_mask && support_exclusive_mask=1
+  telemt_version_supports_user_enabled && support_user_enabled=1
+  telemt_version_supports_client_mss && support_client_mss=1
+  telemt_version_supports_client_mss_bulk && support_client_mss_bulk=1
+  telemt_version_supports_synlimit && support_synlimit=1
+  client_mss="$(normalize_client_mss "$TELEMT_CLIENT_MSS")"
+  client_mss_bulk="$(normalize_client_mss "$TELEMT_CLIENT_MSS_BULK")"
+
+  python3 - "$config_file" "$compose_file" "$DOMAIN" "$client_mss" "$client_mss_bulk" \
+    "$support_exclusive_mask" "$support_user_enabled" "$support_client_mss" "$support_client_mss_bulk" "$support_synlimit" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+compose_path = Path(sys.argv[2])
+domain = sys.argv[3]
+client_mss = sys.argv[4]
+client_mss_bulk = sys.argv[5]
+support_exclusive_mask = sys.argv[6] == "1"
+support_user_enabled = sys.argv[7] == "1"
+support_client_mss = sys.argv[8] == "1"
+support_client_mss_bulk = sys.argv[9] == "1"
+support_synlimit = sys.argv[10] == "1"
+
+lines = config_path.read_text().splitlines(True)
+section_re = re.compile(r'^\s*\[([A-Za-z0-9_.-]+)\]\s*(?:#.*)?$')
+array_re = re.compile(r'^\s*\[\[([A-Za-z0-9_.-]+)\]\]\s*(?:#.*)?$')
+
+def section_name(line):
+    m = section_re.match(line)
+    if m:
+        return m.group(1), False
+    m = array_re.match(line)
+    if m:
+        return m.group(1), True
+    return None, False
+
+def find_section(name):
+    start = None
+    for i, line in enumerate(lines):
+        found, is_array = section_name(line)
+        if found == name and not is_array:
+            start = i
+            break
+    if start is None:
+        return None, None
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        found, _ = section_name(lines[j])
+        if found is not None:
+            end = j
+            break
+    return start, end
+
+def find_arrays(name):
+    ranges = []
+    for i, line in enumerate(lines):
+        found, is_array = section_name(line)
+        if found == name and is_array:
+            end = len(lines)
+            for j in range(i + 1, len(lines)):
+                next_found, _ = section_name(lines[j])
+                if next_found is not None:
+                    end = j
+                    break
+            ranges.append((i, end))
+    return ranges
+
+def raw_key(line):
+    raw = line.split("#", 1)[0].strip()
+    if "=" not in raw:
+        return None
+    return raw.split("=", 1)[0].strip().strip('"')
+
+def raw_value(line):
+    raw = line.split("#", 1)[0].strip()
+    if "=" not in raw:
+        return None
+    return raw.split("=", 1)[1].strip().strip('"')
+
+def has_key(start, end, key):
+    return start is not None and any(raw_key(line) == key for line in lines[start + 1:end])
+
+def value_for_key(start, end, key):
+    if start is None:
+        return None
+    for line in lines[start + 1:end]:
+        if raw_key(line) == key:
+            return raw_value(line)
+    return None
+
+def section_has(section, key):
+    start, end = find_section(section)
+    return has_key(start, end, key)
+
+def arrays_have(array_name, key):
+    arrays = find_arrays(array_name)
+    return bool(arrays) and all(has_key(start, end, key) for start, end in arrays)
+
+def arrays_have_non_true(array_name, key):
+    arrays = find_arrays(array_name)
+    return bool(arrays) and all(has_key(start, end, key) and (value_for_key(start, end, key) or "").lower() != "true" for start, end in arrays)
+
+def section_keys(section):
+    start, end = find_section(section)
+    if start is None:
+        return []
+    return [key for key in (raw_key(line) for line in lines[start + 1:end]) if key]
+
+checks = [
+    ("general.data_path", section_has("general", "data_path")),
+    ("general.quota_state_path", section_has("general", "quota_state_path")),
+    ("general.beobachten", section_has("general", "beobachten")),
+    ("general.beobachten_file", section_has("general", "beobachten_file")),
+    ("server.api.request_body_limit_bytes", section_has("server.api", "request_body_limit_bytes")),
+    ("server.api.minimal_runtime_enabled", section_has("server.api", "minimal_runtime_enabled")),
+    ("server.metrics_listen", section_has("server", "metrics_listen")),
+    ("server.metrics_whitelist", section_has("server", "metrics_whitelist")),
+    ("censorship.mask_dynamic", section_has("censorship", "mask_dynamic")),
+]
+
+if support_client_mss and client_mss != "off":
+    checks.append(("server.client_mss", section_has("server", "client_mss")))
+    checks.append(("server.listeners.client_mss", arrays_have("server.listeners", "client_mss")))
+if support_client_mss_bulk and client_mss != "off" and client_mss_bulk != "off":
+    checks.append(("server.client_mss_bulk", section_has("server", "client_mss_bulk")))
+if support_synlimit:
+    checks.append(("server.listeners.synlimit", arrays_have_non_true("server.listeners", "synlimit")))
+if support_exclusive_mask and domain:
+    checks.append((f"censorship.exclusive_mask.{domain}", section_has("censorship.exclusive_mask", domain)))
+if support_user_enabled:
+    users = section_keys("access.users")
+    enabled = section_keys("access.user_enabled")
+    checks.append(("access.user_enabled", bool(users) and all(user in enabled for user in users)))
+
+upstreams = find_arrays("upstreams")
+if upstreams:
+    checks.append(("upstreams.ipv4", all(has_key(start, end, "ipv4") for start, end in upstreams)))
+    checks.append(("upstreams.ipv6", all(has_key(start, end, "ipv6") for start, end in upstreams)))
+else:
+    checks.append(("upstreams", False))
+
+if compose_path.exists():
+    compose_text = compose_path.read_text()
+    checks.append(("compose.tmpfs./run/telemt", "/run/telemt:" in compose_text))
+    compose_host = bool(re.search(r'(?m)^\s{4}network_mode:\s*"?host"?\s*$', compose_text))
+    checks.append(("compose.network_mode.host", compose_host))
+    if compose_host:
+        checks.append(("compose.no_ports_with_host", not bool(re.search(r'(?m)^\s{4}ports:\s*$', compose_text))))
+
+missing = [name for name, ok in checks if not ok]
+if missing:
+    print(", ".join(missing))
+else:
+    print("none")
+PY
+}
+
 infer_update_config_from_existing_files() {
   local existing_domain existing_user existing_image
 
@@ -3159,25 +4072,411 @@ backup_update_state() {
   fi
 }
 
+apply_telemt_config_compat_updates() {
+  local config_file="$INSTALL_DIR/telemt.toml"
+  local client_mss client_mss_bulk synlimit_value support_exclusive_mask=0 support_user_enabled=0 support_client_mss=0 support_client_mss_bulk=0 support_synlimit=0
+
+  [ -f "$config_file" ] || return 0
+  client_mss="$(normalize_client_mss "$TELEMT_CLIENT_MSS")"
+  client_mss_bulk="$(normalize_client_mss "$TELEMT_CLIENT_MSS_BULK")"
+  synlimit_value="$(normalize_synlimit "$TELEMT_SYNLIMIT")"
+  telemt_version_supports_exclusive_mask && support_exclusive_mask=1
+  telemt_version_supports_user_enabled && support_user_enabled=1
+  telemt_version_supports_client_mss && support_client_mss=1
+  telemt_version_supports_client_mss_bulk && support_client_mss_bulk=1
+  telemt_version_supports_synlimit && support_synlimit=1
+
+  python3 - "$config_file" "$DOMAIN" "$PUBLIC_IP" "$client_mss" "$client_mss_bulk" "$synlimit_value" \
+    "$TELEMT_SYNLIMIT_SECONDS" "$TELEMT_SYNLIMIT_HITCOUNT" "$TELEMT_SYNLIMIT_BURST" \
+    "$TELEMT_SYNLIMIT_IOS_SECONDS" "$TELEMT_SYNLIMIT_IOS_HITCOUNT" "$TELEMT_SYNLIMIT_IOS_BURST" \
+    "$TELEMT_SYNLIMIT_HASHLIMIT_EXPIRE_MS" "$TELEMT_SYNLIMIT_HASHLIMIT_SIZE" \
+    "$support_exclusive_mask" "$support_user_enabled" "$support_client_mss" "$support_client_mss_bulk" "$support_synlimit" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+domain, public_ip, client_mss, client_mss_bulk, synlimit = sys.argv[2:7]
+syn_seconds, syn_hitcount, syn_burst = sys.argv[7:10]
+syn_ios_seconds, syn_ios_hitcount, syn_ios_burst = sys.argv[10:13]
+syn_hashlimit_expire_ms, syn_hashlimit_size = sys.argv[13:15]
+support_exclusive_mask = sys.argv[15] == "1"
+support_user_enabled = sys.argv[16] == "1"
+support_client_mss = sys.argv[17] == "1"
+support_client_mss_bulk = sys.argv[18] == "1"
+support_synlimit = sys.argv[19] == "1"
+
+lines = path.read_text().splitlines(True)
+changed = False
+
+section_re = re.compile(r'^\s*\[([A-Za-z0-9_.-]+)\]\s*(?:#.*)?$')
+array_re = re.compile(r'^\s*\[\[([A-Za-z0-9_.-]+)\]\]\s*(?:#.*)?$')
+
+def section_name(line):
+    m = section_re.match(line)
+    if m:
+        return m.group(1), False
+    m = array_re.match(line)
+    if m:
+        return m.group(1), True
+    return None, False
+
+def find_section(name):
+    start = None
+    for i, line in enumerate(lines):
+        found, is_array = section_name(line)
+        if found == name and not is_array:
+            start = i
+            break
+    if start is None:
+        return None, None
+    end = len(lines)
+    for j in range(start + 1, len(lines)):
+        found, _ = section_name(lines[j])
+        if found is not None:
+            end = j
+            break
+    return start, end
+
+def find_arrays(name):
+    ranges = []
+    for i, line in enumerate(lines):
+        found, is_array = section_name(line)
+        if found == name and is_array:
+            end = len(lines)
+            for j in range(i + 1, len(lines)):
+                next_found, _ = section_name(lines[j])
+                if next_found is not None:
+                    end = j
+                    break
+            ranges.append((i, end))
+    return ranges
+
+def raw_key(line):
+    raw = line.split("#", 1)[0].strip()
+    if "=" not in raw:
+        return None
+    return raw.split("=", 1)[0].strip().strip('"')
+
+def has_key(start, end, key):
+    return any(raw_key(line) == key for line in lines[start + 1:end])
+
+def set_key(start, end, key, value_line):
+    global changed
+    for i in range(start + 1, end):
+        if raw_key(lines[i]) == key:
+            if lines[i].strip() != value_line.strip():
+                lines[i] = value_line
+                changed = True
+            return
+    lines.insert(end, value_line)
+    changed = True
+
+def remove_key_in_range(start, end, key):
+    global changed
+    for i in range(end - 1, start, -1):
+        if raw_key(lines[i]) == key:
+            del lines[i]
+            changed = True
+
+def ensure_section(name, insert_before_arrays=True):
+    global changed
+    start, end = find_section(name)
+    if start is not None:
+        return start, end
+    insert_at = len(lines)
+    if insert_before_arrays:
+        for i, line in enumerate(lines):
+            found, is_array = section_name(line)
+            if is_array and found == "upstreams":
+                insert_at = i
+                break
+    block = []
+    if lines and lines[insert_at - 1:insert_at] and lines[insert_at - 1].strip():
+        block.append("\n")
+    block.append(f"[{name}]\n")
+    lines[insert_at:insert_at] = block
+    changed = True
+    return find_section(name)
+
+def ensure_section_key(name, key, value_line):
+    start, end = ensure_section(name)
+    if not has_key(start, end, key):
+        set_key(start, end, key, value_line)
+
+def ensure_key_in_range(start, end, key, value_line):
+    if not has_key(start, end, key):
+        set_key(start, end, key, value_line)
+
+def parse_section_values(name):
+    start, end = find_section(name)
+    values = {}
+    if start is None:
+        return values
+    for line in lines[start + 1:end]:
+        key = raw_key(line)
+        if not key:
+            continue
+        raw = line.split("#", 1)[0]
+        val = raw.split("=", 1)[1].strip().strip('"')
+        values[key] = val
+    return values
+
+ensure_section_key("general", "data_path", 'data_path = "/run/telemt"\n')
+ensure_section_key("general", "quota_state_path", 'quota_state_path = "/run/telemt/telemt.limit.json"\n')
+ensure_section_key("general", "config_strict", "config_strict = true\n")
+ensure_section_key("general", "beobachten", "beobachten = true\n")
+ensure_section_key("general", "beobachten_minutes", "beobachten_minutes = 10\n")
+ensure_section_key("general", "beobachten_flush_secs", "beobachten_flush_secs = 15\n")
+ensure_section_key("general", "beobachten_file", 'beobachten_file = "/run/telemt/beobachten.txt"\n')
+
+ensure_section_key("server.api", "request_body_limit_bytes", "request_body_limit_bytes = 65536\n")
+ensure_section_key("server.api", "minimal_runtime_enabled", "minimal_runtime_enabled = true\n")
+ensure_section_key("server.api", "minimal_runtime_cache_ttl_ms", "minimal_runtime_cache_ttl_ms = 1000\n")
+
+if support_client_mss and client_mss != "off":
+    ensure_section_key("server", "client_mss", f'client_mss = "{client_mss}"\n')
+    if support_client_mss_bulk and client_mss_bulk != "off":
+        ensure_section_key("server", "client_mss_bulk", f'client_mss_bulk = "{client_mss_bulk}"\n')
+
+server_start, server_end = find_section("server")
+if server_start is not None:
+    ensure_key_in_range(server_start, server_end, "metrics_listen", 'metrics_listen = "127.0.0.1:9090"\n')
+    ensure_key_in_range(server_start, server_end, "metrics_whitelist", 'metrics_whitelist = ["127.0.0.1/32", "::1/128"]\n')
+
+for start, end in find_arrays("server.listeners"):
+    if support_client_mss and client_mss != "off":
+        ensure_key_in_range(start, end, "client_mss", f'client_mss = "{client_mss}"\n')
+    if support_synlimit:
+        current_true = False
+        for i in range(start + 1, end):
+            if raw_key(lines[i]) == "synlimit" and lines[i].split("#", 1)[0].split("=", 1)[1].strip().lower() == "true":
+                current_true = True
+                break
+        if synlimit == "false":
+            if current_true:
+                set_key(start, end, "synlimit", "synlimit = false\n")
+            else:
+                ensure_key_in_range(start, end, "synlimit", "synlimit = false\n")
+        else:
+            ensure_key_in_range(start, end, "synlimit", f'synlimit = "{synlimit}"\n')
+            ensure_key_in_range(start, end, "synlimit_seconds", f"synlimit_seconds = {syn_seconds}\n")
+            ensure_key_in_range(start, end, "synlimit_hitcount", f"synlimit_hitcount = {syn_hitcount}\n")
+            ensure_key_in_range(start, end, "synlimit_burst", f"synlimit_burst = {syn_burst}\n")
+            ensure_key_in_range(start, end, "synlimit_ios_seconds", f"synlimit_ios_seconds = {syn_ios_seconds}\n")
+            ensure_key_in_range(start, end, "synlimit_ios_hitcount", f"synlimit_ios_hitcount = {syn_ios_hitcount}\n")
+            ensure_key_in_range(start, end, "synlimit_ios_burst", f"synlimit_ios_burst = {syn_ios_burst}\n")
+            ensure_key_in_range(start, end, "synlimit_hashlimit_expire_ms", f"synlimit_hashlimit_expire_ms = {syn_hashlimit_expire_ms}\n")
+            ensure_key_in_range(start, end, "synlimit_hashlimit_size", f"synlimit_hashlimit_size = {syn_hashlimit_size}\n")
+
+ensure_section_key("censorship", "mask_dynamic", "mask_dynamic = false\n")
+if support_exclusive_mask and domain:
+    ex_start, ex_end = ensure_section("censorship.exclusive_mask")
+    if not has_key(ex_start, ex_end, domain):
+        set_key(ex_start, ex_end, domain, f'{json.dumps(domain)} = "127.0.0.1:8443"\n')
+
+if support_user_enabled:
+    users = parse_section_values("access.users")
+    en_start, en_end = ensure_section("access.user_enabled")
+    for username in users:
+        if not has_key(en_start, en_end, username):
+            set_key(en_start, en_end, username, f'{json.dumps(username)} = true\n')
+            en_start, en_end = find_section("access.user_enabled")
+
+upstreams = find_arrays("upstreams")
+if not upstreams:
+    block = '\n[[upstreams]]\ntype = "direct"\nenabled = true\nweight = 10\nipv4 = true\nipv6 = false\n'
+    lines.append(block)
+    changed = True
+else:
+    for start, end in upstreams:
+        ensure_key_in_range(start, end, "ipv4", "ipv4 = true\n")
+        ensure_key_in_range(start, end, "ipv6", "ipv6 = false\n")
+        remove_key_in_range(start, end, "prefer")
+
+if changed:
+    path.write_text("".join(lines))
+PY
+}
+
+apply_compose_runtime_compat_updates() {
+  local compose_file="$INSTALL_DIR/docker-compose.yml"
+  [ -f "$compose_file" ] || return 0
+
+  python3 - "$compose_file" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+lines = path.read_text().splitlines(True)
+changed = False
+
+def telemt_bounds():
+    start = None
+    for i, line in enumerate(lines):
+        if re.match(r'^\s{2}telemt:\s*$', line):
+            start = i
+            break
+    if start is None:
+        return None, None
+    end = len(lines)
+    for i in range(start + 1, len(lines)):
+        if re.match(r'^\s{2}[A-Za-z0-9_.-]+:\s*$', lines[i]):
+            end = i
+            break
+    return start, end
+
+def service_key_pattern(key):
+    return re.compile(rf'^\s{{4}}{re.escape(key)}:\s*')
+
+def service_block_end(i, end):
+    j = i + 1
+    while j < end and not re.match(r'^\s{4}[A-Za-z0-9_.-]+:\s*', lines[j]):
+        j += 1
+    return j
+
+def remove_service_block(key):
+    global changed
+    start, end = telemt_bounds()
+    if start is None:
+        return
+    pattern = service_key_pattern(key)
+    i = start + 1
+    while i < end:
+        if pattern.match(lines[i]):
+            del lines[i:service_block_end(i, end)]
+            changed = True
+            return
+        i += 1
+
+def set_service_scalar(key, value, anchors):
+    global changed
+    start, end = telemt_bounds()
+    if start is None:
+        return
+    pattern = service_key_pattern(key)
+    wanted = f"    {key}: {value}\n"
+    for i in range(start + 1, end):
+        if pattern.match(lines[i]):
+            if lines[i] != wanted:
+                lines[i] = wanted
+                changed = True
+            return
+
+    insert_at = start + 1
+    for anchor in anchors:
+        anchor_pattern = service_key_pattern(anchor)
+        found = None
+        for i in range(start + 1, end):
+            if anchor_pattern.match(lines[i]):
+                found = service_block_end(i, end)
+                break
+        if found is not None:
+            insert_at = found
+            break
+    lines.insert(insert_at, wanted)
+    changed = True
+
+def ensure_tmpfs_run_telemt():
+    global changed
+    start, end = telemt_bounds()
+    if start is None:
+        return
+    if any("/run/telemt:" in line for line in lines[start:end]):
+        return
+
+    tmpfs_idx = None
+    for i in range(start + 1, end):
+        if re.match(r'^\s{4}tmpfs:\s*$', lines[i]):
+            tmpfs_idx = i
+            break
+
+    if tmpfs_idx is not None:
+        insert_at = tmpfs_idx + 1
+        while insert_at < end and re.match(r'^\s{6}-\s+', lines[insert_at]):
+            insert_at += 1
+        lines.insert(insert_at, "      - /run/telemt:rw,nosuid,nodev,noexec,size=32m\n")
+        changed = True
+        return
+
+    for anchor in ("read_only", "command", "network_mode", "restart"):
+        anchor_pattern = service_key_pattern(anchor)
+        start, end = telemt_bounds()
+        for i in range(start + 1, end):
+            if anchor_pattern.match(lines[i]):
+                insert_at = service_block_end(i, end)
+                lines[insert_at:insert_at] = [
+                    "    tmpfs:\n",
+                    "      - /run/telemt:rw,nosuid,nodev,noexec,size=32m\n",
+                ]
+                changed = True
+                return
+
+set_service_scalar("container_name", "telemt", ("image",))
+set_service_scalar("restart", "unless-stopped", ("container_name", "image"))
+set_service_scalar("network_mode", "host", ("restart", "container_name", "image"))
+remove_service_block("ports")
+ensure_tmpfs_run_telemt()
+
+if changed:
+    path.write_text("".join(lines))
+PY
+}
+
+apply_update_compatibility_patches() {
+  if is_ru; then
+    say "Обновляю существующий telemt.toml/compose безопасными ключами для Telemt $(telemt_effective_version)."
+  else
+    say "Applying safe telemt.toml/compose compatibility keys for Telemt $(telemt_effective_version)."
+  fi
+  apply_telemt_config_compat_updates
+  apply_compose_runtime_compat_updates
+  fix_runtime_permissions
+}
+
 run_update_mode() {
   if is_ru; then
-    say "Режим update: сохраняю существующие настройки и обновляю только Docker image/контейнер."
+    say "Режим update: сохраняю настройки, обновляю Docker image/контейнер и проверяю host nginx/OpenSSL на Ubuntu."
   else
-    say "Update mode: preserving existing settings and updating only the Docker image/container."
+    say "Update mode: preserving settings, updating the Docker image/container, and validating host nginx/OpenSSL on Ubuntu."
   fi
 
   [ -d "$INSTALL_DIR" ] || die "Install directory not found: $INSTALL_DIR"
   [ -f "$INSTALL_DIR/docker-compose.yml" ] || die "docker-compose.yml not found: $INSTALL_DIR/docker-compose.yml"
   [ -f "$INSTALL_DIR/telemt.toml" ] || die "telemt.toml not found: $INSTALL_DIR/telemt.toml"
 
+  [ -s "$SYSTEM_CA_FILE" ] && configure_system_ca_environment
+
   infer_update_config_from_existing_files
   [ -n "$DOMAIN" ] || die "Cannot detect domain from saved config or $INSTALL_DIR/telemt.toml."
   [ -n "$TELEMT_USER" ] || die "Cannot detect Telemt user from saved config or $INSTALL_DIR/telemt.toml."
 
-  PUBLIC_IP="$(public_ipv4)"
+  PUBLIC_IP="$(public_ipv4 || true)"
   if ! [[ "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     die "Cannot detect public IPv4."
   fi
+
+  TELEMT_CLIENT_MSS="$(normalize_client_mss "$TELEMT_CLIENT_MSS")"
+  TELEMT_CLIENT_MSS_BULK="$(normalize_client_mss "$TELEMT_CLIENT_MSS_BULK")"
+  TELEMT_SYNLIMIT="$(normalize_synlimit "$TELEMT_SYNLIMIT")"
+  validate_synlimit_number TELEMT_SYNLIMIT_SECONDS "$TELEMT_SYNLIMIT_SECONDS"
+  validate_synlimit_number TELEMT_SYNLIMIT_HITCOUNT "$TELEMT_SYNLIMIT_HITCOUNT"
+  validate_synlimit_number TELEMT_SYNLIMIT_BURST "$TELEMT_SYNLIMIT_BURST"
+  validate_synlimit_number TELEMT_SYNLIMIT_IOS_SECONDS "$TELEMT_SYNLIMIT_IOS_SECONDS"
+  validate_synlimit_number TELEMT_SYNLIMIT_IOS_HITCOUNT "$TELEMT_SYNLIMIT_IOS_HITCOUNT"
+  validate_synlimit_number TELEMT_SYNLIMIT_IOS_BURST "$TELEMT_SYNLIMIT_IOS_BURST"
+  validate_synlimit_number TELEMT_SYNLIMIT_HASHLIMIT_EXPIRE_MS "$TELEMT_SYNLIMIT_HASHLIMIT_EXPIRE_MS"
+  validate_synlimit_number TELEMT_SYNLIMIT_HASHLIMIT_SIZE "$TELEMT_SYNLIMIT_HASHLIMIT_SIZE"
+
+  detect_current_telemt_version || true
+  resolve_update_target_version
+  TELEMT_UPDATE_IMAGE_BEFORE="$TELEMT_IMAGE"
+  TELEMT_UPDATE_IMAGE_AFTER="$(resolve_update_image_ref "$TELEMT_IMAGE" "$TELEMT_UPDATE_TARGET_VERSION")" ||
+    die "Cannot update digest-pinned image safely: $TELEMT_IMAGE"
+  TELEMT_UPDATE_CONFIG_MISSING="$(build_update_config_gap_report || true)"
+  [ -n "$TELEMT_UPDATE_CONFIG_MISSING" ] || TELEMT_UPDATE_CONFIG_MISSING="none"
 
   if is_ru; then
     cat <<EOF
@@ -3185,10 +4484,18 @@ run_update_mode() {
 План обновления:
   домен:            $DOMAIN
   публичный IPv4:   $PUBLIC_IP
-  Docker image:     $TELEMT_IMAGE
+  текущая версия:   ${TELEMT_DETECTED_VERSION:-unknown}${TELEMT_DETECTED_VERSION_SOURCE:+ ($TELEMT_DETECTED_VERSION_SOURCE)}
+  целевая версия:   $TELEMT_UPDATE_TARGET_VERSION (точный совместимый release tag)
+  Docker image:     $TELEMT_UPDATE_IMAGE_BEFORE
+  target image:     $TELEMT_UPDATE_IMAGE_AFTER
   каталог:          $INSTALL_DIR
-  конфиг Telemt:    будет сохранен без перезаписи
-  compose:          будет сохранен без перезаписи
+  конфиг Telemt:    будет сохранен, затем дополнен только отсутствующими безопасными ключами
+  не хватает:       $TELEMT_UPDATE_CONFIG_MISSING
+  compose:          будет сохранен, затем приведен к текущей Docker-схеме: network_mode host + tmpfs /run/telemt
+  client_mss:       $TELEMT_CLIENT_MSS
+  client_mss_bulk:  $TELEMT_CLIENT_MSS_BULK
+  synlimit:         $TELEMT_SYNLIMIT
+  host nginx TLS:   $(host_nginx_tls_plan)
   секреты/ссылки:   будут сохранены, ссылки будут пересобраны из текущего секрета
 
 EOF
@@ -3198,10 +4505,18 @@ EOF
 Update plan:
   domain:           $DOMAIN
   public IPv4:      $PUBLIC_IP
-  Docker image:     $TELEMT_IMAGE
+  current version:  ${TELEMT_DETECTED_VERSION:-unknown}${TELEMT_DETECTED_VERSION_SOURCE:+ ($TELEMT_DETECTED_VERSION_SOURCE)}
+  target version:   $TELEMT_UPDATE_TARGET_VERSION (exact compatible release tag)
+  Docker image:     $TELEMT_UPDATE_IMAGE_BEFORE
+  target image:     $TELEMT_UPDATE_IMAGE_AFTER
   directory:        $INSTALL_DIR
-  Telemt config:    preserved without rewrite
-  compose:          preserved without rewrite
+  Telemt config:    preserved, then extended only with missing safe keys
+  missing keys:     $TELEMT_UPDATE_CONFIG_MISSING
+  compose:          preserved, then aligned to the current Docker layout: host networking + /run/telemt tmpfs
+  client_mss:       $TELEMT_CLIENT_MSS
+  client_mss_bulk:  $TELEMT_CLIENT_MSS_BULK
+  synlimit:         $TELEMT_SYNLIMIT
+  host nginx TLS:   $(host_nginx_tls_plan)
   secrets/links:    preserved; links regenerated from the existing secret
 
 EOF
@@ -3210,7 +4525,10 @@ EOF
 
   ensure_docker_available
   backup_update_state
+  ensure_ubuntu_nginx_openssl35
+  ensure_python3_for_idn
   refresh_docker_image_for_update
+  apply_update_compatibility_patches
   install_telemt_users_tool
   fix_runtime_permissions
   start_telemt
@@ -3303,6 +4621,7 @@ main() {
     if [ "$SCRIPT_LANG_FROM_CLI" = "1" ]; then
       SCRIPT_LANG="$requested_script_lang"
     fi
+    require_supported_os
     run_fix_nginx_mode
     exit 0
   fi
@@ -3339,7 +4658,7 @@ main() {
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates curl iproute2 libc-bin
   fi
 
-  PUBLIC_IP="$(public_ipv4)"
+  PUBLIC_IP="$(public_ipv4 || true)"
   if ! [[ "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     if is_ru; then
       die "Не удалось определить публичный IPv4."
@@ -3379,29 +4698,37 @@ main() {
     install_packages
     mark_done packages
   fi
+
+  if step_done host_nginx_tls; then
+    is_ru && say "[03] Host nginx/OpenSSL (уже проверено)" || say "[03] Host nginx/OpenSSL (already checked)"
+  else
+    is_ru && say "[03] Проверка host nginx/OpenSSL" || say "[03] Check host nginx/OpenSSL"
+    ensure_ubuntu_nginx_openssl35
+    mark_done host_nginx_tls
+  fi
   ensure_docker_available
   ensure_compose_available
 
   if step_done docker_image; then
-    is_ru && say "[03] Проверка Docker image (уже выполнено)" || say "[03] Check Docker image (already done)"
+    is_ru && say "[04] Проверка Docker image (уже выполнено)" || say "[04] Check Docker image (already done)"
   else
-    is_ru && say "[03] Проверка Docker image" || say "[03] Check Docker image"
+    is_ru && say "[04] Проверка Docker image" || say "[04] Check Docker image"
     check_docker_image
     mark_done docker_image
   fi
 
   if step_done high_load; then
-    is_ru && say "[04] High-load tuning (уже выполнено)" || say "[04] High-load tuning (already done)"
+    is_ru && say "[05] High-load tuning (уже выполнено)" || say "[05] High-load tuning (already done)"
   else
-    is_ru && say "[04] High-load tuning" || say "[04] High-load tuning"
+    is_ru && say "[05] High-load tuning" || say "[05] High-load tuning"
     configure_high_load
     mark_done high_load
   fi
 
   if step_done cert; then
-    is_ru && say "[05] nginx HTTP и сертификат (уже выполнено)" || say "[05] nginx HTTP and certificate (already done)"
+    is_ru && say "[06] nginx HTTP и сертификат (уже выполнено)" || say "[06] nginx HTTP and certificate (already done)"
   else
-    is_ru && say "[05] nginx HTTP и сертификат" || say "[05] nginx HTTP and certificate"
+    is_ru && say "[06] nginx HTTP и сертификат" || say "[06] nginx HTTP and certificate"
     write_mask_site_http_only
     write_firewall_hints
     verify_acme_http01_webroot
@@ -3410,9 +4737,9 @@ main() {
   fi
 
   if step_done config; then
-    is_ru && say "[06] Конфиг Telemt и nginx SNI (уже выполнено)" || say "[06] Telemt config and nginx SNI (already done)"
+    is_ru && say "[07] Конфиг Telemt и nginx SNI (уже выполнено)" || say "[07] Telemt config and nginx SNI (already done)"
   else
-    is_ru && say "[06] Конфиг Telemt и nginx SNI" || say "[06] Telemt config and nginx SNI"
+    is_ru && say "[07] Конфиг Telemt и nginx SNI" || say "[07] Telemt config and nginx SNI"
     ensure_secret
     write_telemt_config
     write_compose
@@ -3423,10 +4750,10 @@ main() {
   fi
   fix_runtime_permissions
 
-  is_ru && say "[07] Запуск Telemt" || say "[07] Start Telemt"
+  is_ru && say "[08] Запуск Telemt" || say "[08] Start Telemt"
   start_telemt
 
-  is_ru && say "[08] Проверка" || say "[08] Validate"
+  is_ru && say "[09] Проверка" || say "[09] Validate"
   validate_install
   mark_done complete
 
@@ -3479,4 +4806,6 @@ EOF
   fi
 }
 
-main "$@"
+if [ "${TELEMT_INSTALLER_SOURCE_ONLY:-0}" != "1" ]; then
+  main "$@"
+fi

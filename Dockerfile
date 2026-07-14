@@ -1,12 +1,14 @@
 # syntax=docker/dockerfile:1
 
 ARG TELEMT_REPOSITORY=telemt/telemt
-ARG TELEMT_VERSION=latest
+ARG TELEMT_VERSION=3.4.23
+ARG ALLOW_TELEMT_LATEST=0
 
 FROM debian:12-slim AS fetch
 ARG TARGETARCH
 ARG TELEMT_REPOSITORY
 ARG TELEMT_VERSION
+ARG ALLOW_TELEMT_LATEST
 
 RUN set -eux; \
     apt-get update; \
@@ -24,6 +26,10 @@ RUN set -eux; \
       *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     VERSION="${TELEMT_VERSION#refs/tags/}"; \
+    if [ "${VERSION}" = "latest" ] && [ "${ALLOW_TELEMT_LATEST}" != "1" ]; then \
+      echo "TELEMT_VERSION=latest is disabled for reproducible builds; use an exact release tag." >&2; \
+      exit 1; \
+    fi; \
     if [ -z "${VERSION}" ] || [ "${VERSION}" = "latest" ]; then \
       BASE_URL="https://github.com/${TELEMT_REPOSITORY}/releases/latest/download"; \
     else \

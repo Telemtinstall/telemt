@@ -17,13 +17,19 @@ usage() {
   cat <<'EOF'
 Usage:
   telemt-users list
+  telemt-users status
   telemt-users links
   telemt-users add <user> [max_tcp_conns]
+  telemt-users enable <user>
+  telemt-users disable <user>
   telemt-users del <user>
 
 Examples:
   telemt-users add user2
   telemt-users add friend 5000
+  telemt-users disable friend
+  telemt-users enable friend
+  telemt-users status
   telemt-users links
   telemt-users del friend
 EOF
@@ -96,7 +102,7 @@ users_and_secrets() {
       gsub(/^"|"$/, "", key)
       gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
       gsub(/^"|"$/, "", val)
-      if (key != "" && val ~ /^[A-Fa-f0-9]{32}$/) print key, val
+      if (key != "" && length(val) == 32 && val !~ /[^A-Fa-f0-9]/) print key, val
     }
   ' "$CONFIG_FILE"
 }
@@ -106,11 +112,77 @@ list_users() {
   users_and_secrets | awk '{print $1}'
 }
 
+user_enabled() {
+  local user="$1"
+  awk -v wanted="$user" '
+    /^\[access\.user_enabled\]/ {in_enabled=1; next}
+    /^\[/ && in_enabled {in_enabled=0}
+    in_enabled {
+      line=$0
+      sub(/#.*/, "", line)
+      eq=index(line, "=")
+      if (!eq) next
+      key=substr(line, 1, eq - 1)
+      val=substr(line, eq + 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      gsub(/^"|"$/, "", key)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+      if (key == wanted) {
+        if (val ~ /^(false|False|FALSE)$/) print "false"
+        else print "true"
+        found=1
+        exit
+      }
+    }
+    END { if (!found) print "true" }
+  ' "$CONFIG_FILE"
+}
+
+user_limit() {
+  local user="$1"
+  awk -v wanted="$user" '
+    /^\[access\.user_max_tcp_conns\]/ {in_limits=1; next}
+    /^\[/ && in_limits {in_limits=0}
+    in_limits {
+      line=$0
+      sub(/#.*/, "", line)
+      eq=index(line, "=")
+      if (!eq) next
+      key=substr(line, 1, eq - 1)
+      val=substr(line, eq + 1)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+      gsub(/^"|"$/, "", key)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
+      if (key == wanted) { print val; found=1; exit }
+    }
+    END { if (!found) print "unlimited" }
+  ' "$CONFIG_FILE"
+}
+
+unique_backup_path() {
+  local base candidate i=0
+  base="${CONFIG_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
+  candidate="$base"
+  while [ -e "$candidate" ]; do
+    i=$((i + 1))
+    candidate="${base}.${i}"
+  done
+  printf '%s' "$candidate"
+}
+
+status_users() {
+  require_config
+  while read -r user _secret; do
+    [ -n "$user" ] || continue
+    printf '%-24s enabled=%s max_tcp_conns=%s\n' "$user" "$(user_enabled "$user")" "$(user_limit "$user")"
+  done < <(users_and_secrets)
+}
+
 write_links() {
   require_config
-  local domain port domain_hex direct_host user secret tls_secret https_link tg_link direct_https direct_tg first_https="" first_direct_https=""
-  domain="$(config_value 'general\.links' public_host)"
-  port="$(config_value 'general\.links' public_port)"
+  local domain port domain_hex direct_host user secret enabled tls_secret https_link tg_link direct_https direct_tg first_https="" first_direct_https=""
+  domain="$(config_value 'general\\.links' public_host)"
+  port="$(config_value 'general\\.links' public_port)"
   direct_host="$(config_first_value announce || true)"
   [ -n "$domain" ] || die "Cannot detect public_host from [general.links]."
   port="${port:-443}"
@@ -120,13 +192,18 @@ write_links() {
   chmod 600 "$LINKS_FILE" 2>/dev/null || true
   while read -r user secret; do
     [ -n "$user" ] || continue
+    enabled="$(user_enabled "$user")"
     secret="$(printf '%s' "$secret" | tr 'A-F' 'a-f')"
     tls_secret="ee${secret}${domain_hex}"
     https_link="https://t.me/proxy?server=${domain}&port=${port}&secret=${tls_secret}"
     tg_link="tg://proxy?server=${domain}&port=${port}&secret=${tls_secret}"
     [ -n "$first_https" ] || first_https="$https_link"
     {
-      printf '# user: %s\n' "$user"
+      if [ "$enabled" = "false" ]; then
+        printf '# user: %s (disabled)\n' "$user"
+      else
+        printf '# user: %s\n' "$user"
+      fi
       printf '%s\n' "$https_link"
       printf '%s\n\n' "$tg_link"
       if [ -n "$direct_host" ] && [ "$direct_host" != "$domain" ]; then
@@ -170,7 +247,7 @@ modify_config() {
   validate_user "$user"
   [[ "$max_tcp" =~ ^[0-9]+$ ]] || die "Bad max_tcp_conns: $max_tcp"
   secret="$(openssl rand -hex 16)"
-  backup="${CONFIG_FILE}.bak.$(date +%Y%m%d-%H%M%S)"
+  backup="$(unique_backup_path)"
   cp -a "$CONFIG_FILE" "$backup"
 
   python3 - "$CONFIG_FILE" "$action" "$user" "$secret" "$max_tcp" <<'PY'
@@ -220,6 +297,7 @@ def parse_section(name):
 
 users = parse_section('access.users')
 limits = parse_section('access.user_max_tcp_conns')
+enabled = parse_section('access.user_enabled')
 
 if action == 'add':
     if user in users:
@@ -227,6 +305,7 @@ if action == 'add':
         sys.exit(2)
     users[user] = secret.lower()
     limits[user] = max_tcp
+    enabled[user] = 'true'
 elif action == 'del':
     if user not in users:
         print(f'user not found: {user}', file=sys.stderr)
@@ -236,6 +315,17 @@ elif action == 'del':
         sys.exit(2)
     users.pop(user, None)
     limits.pop(user, None)
+    enabled.pop(user, None)
+elif action == 'enable':
+    if user not in users:
+        print(f'user not found: {user}', file=sys.stderr)
+        sys.exit(2)
+    enabled[user] = 'true'
+elif action == 'disable':
+    if user not in users:
+        print(f'user not found: {user}', file=sys.stderr)
+        sys.exit(2)
+    enabled[user] = 'false'
 else:
     print(f'bad action: {action}', file=sys.stderr)
     sys.exit(2)
@@ -280,6 +370,7 @@ def set_general_links_show():
 
 replace_section('access.user_max_tcp_conns', [f'{json.dumps(k)} = {int(v)}\n' for k, v in limits.items()])
 replace_section('access.users', [f'{json.dumps(k)} = {json.dumps(v)}\n' for k, v in users.items()])
+replace_section('access.user_enabled', [f'{json.dumps(k)} = {str(v).lower()}\n' for k, v in enabled.items() if k in users])
 set_general_links_show()
 set_top_show_link()
 path.write_text(''.join(lines))
@@ -296,6 +387,9 @@ main() {
     list)
       list_users
       ;;
+    status)
+      status_users
+      ;;
     links)
       write_links
       ;;
@@ -303,6 +397,20 @@ main() {
       [ $# -ge 2 ] || { usage; exit 1; }
       require_config
       modify_config add "$2" "${3:-$DEFAULT_MAX_TCP_CONNS}"
+      restart_telemt
+      write_links
+      ;;
+    enable)
+      [ $# -ge 2 ] || { usage; exit 1; }
+      require_config
+      modify_config enable "$2" "$DEFAULT_MAX_TCP_CONNS"
+      restart_telemt
+      write_links
+      ;;
+    disable)
+      [ $# -ge 2 ] || { usage; exit 1; }
+      require_config
+      modify_config disable "$2" "$DEFAULT_MAX_TCP_CONNS"
       restart_telemt
       write_links
       ;;

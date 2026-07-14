@@ -1,5 +1,66 @@
 # Changelog
 
+## 2026-07-14
+
+### Added
+
+- Added `update-with-system-ca.sh`, a separate compatibility wrapper for Docker Telemt servers with a manually installed OpenSSL whose compiled default trust path does not use the operating system CA bundle.
+- The wrapper compares default and explicit-CA TLS verification and refuses to hide real certificate-chain failures. It is check-only by default; `--run-update` explicitly invokes the existing updater with `SSL_CERT_FILE`/`CURL_CA_BUNDLE` after refusing a possible Telemt version downgrade.
+- The wrapper does not patch the Docker installer at runtime. It does not edit certificates, nginx configuration, Telemt configuration, users, or secrets; after validation it invokes the normal documented `--update` behavior.
+- Added Ubuntu host nginx/OpenSSL validation to fresh install, `--update`, and `--fix-nginx`. The installer checks both the nginx command and the service binary, then builds isolated nginx `1.31.2` with pinned OpenSSL `3.5.7` when the host stack is too old.
+
+### Changed
+
+- Updated the exact checked compatible Telemt target and example image tag to `3.4.23`.
+- Docker OS validation now accepts Debian 13.x or Ubuntu 24.x-26.x and stops before installation on other versions.
+- Ubuntu support is Docker-only. The host nginx fallback does not replace system OpenSSL shared libraries, while Debian 13 keeps the existing distro-nginx path.
+
+### Fixed
+
+- Fixed `mawk` warnings about the `general.links` section escape in `telemt-users links`; Debian and Ubuntu now regenerate links without OS-specific warning noise.
+
+## 2026-07-07
+
+### Changed
+
+- Added explicit README command blocks for updating Docker Telemt `3.4.18` to the checked compatible `3.4.22` release from a `telemt2` checkout, including a no-change dry-run plan and post-update checks.
+- Public IPv4 detection now prefers a DNS A record that matches one of the server's local IPv4 addresses before falling back to external egress-IP services. This keeps update plans correct on servers whose outbound traffic leaves through a different VPN/WireGuard IP.
+
+### Fixed
+
+- Made `telemt-users` user parsing compatible with `mawk` on older Debian systems by avoiding interval regex syntax in the 32-hex secret check.
+- Made Docker installer secret parsing compatible with `mawk` too, so link regeneration and existing-secret loading use the same portable 32-hex check without OS-specific branches or notices.
+
+## 2026-07-06
+
+### Changed
+
+- Updated the checked compatible Telemt target to `3.4.22`.
+- Fresh installs and `--update` now add `client_mss_bulk = "1400"` for Telemt `3.4.19+` when MSS is enabled.
+- `--update` now reports missing `server.client_mss_bulk` and patches existing `telemt.toml` without overwriting manual values.
+- Synlimit V2 fields are written when `TELEMT_SYNLIMIT=nftables|iptables`; SYN limiter remains disabled by default in the Docker/nginx-stream layout.
+
+### Fixed
+
+- `--update` now removes invalid `prefer` keys from `[[upstreams]]`; Telemt `3.4.22` rejects `upstreams[].prefer` under `general.config_strict=true`.
+
+## 2026-06-12
+
+### Changed
+
+- Default upstream Telemt release and installer image tag are now pinned to `3.4.18` instead of using a moving `latest` tag.
+- `--update` now analyzes the existing install, detects the current Telemt version when possible, switches compose to the exact checked compatible target tag, and safely extends existing `telemt.toml`/compose with missing Telemt `3.4.18` compatibility keys instead of requiring a separate migration mode.
+- `TELEMT_VERSION=latest` is ignored in `--update`; the updater uses `TELEMT_LATEST_COMPATIBLE_VERSION` unless an exact release tag is provided intentionally.
+- `build.sh` now blocks `TELEMT_VERSION=latest` by default; set `ALLOW_TELEMT_LATEST=1` only for an intentional moving-latest build.
+- Generated configs now use `/run/telemt` for runtime/cache state, enable bounded `beobachten` diagnostics, add `client_mss` when supported, keep `synlimit = false` by default, set `mask_dynamic = false`, and add per-upstream IPv4 policy.
+- Compose now always mounts `/run/telemt` as tmpfs for Telemt runtime/cache state; hardening additionally adds `/tmp` tmpfs, read-only root, dropped capabilities, and no-new-privileges.
+- Generated compose YAML no longer contains tab indentation in the hardening block.
+- Container recreation now removes only the exact `telemt` container name, avoiding accidental matches such as `telemt-monitor`.
+- Public IPv4 detection now falls back cleanly to the installer error message instead of exiting early under `set -e`.
+- README now documents every installer prompt with its meaning, default value, and recommended answer.
+- `telemt-users` now supports `status`, `enable`, and `disable`, preserving user secrets through `[access.user_enabled]`.
+- `telemt-report.sh` now shows user enabled state and attempts to include TLS fingerprint runtime diagnostics when available.
+
 ## 2026-05-31
 
 ### Changed
